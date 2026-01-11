@@ -1,0 +1,15 @@
+#!/usr/bin/env python
+
+from EnvDefault import EnvDefault
+from tackles import *
+
+def main():
+    CopyValidateMD5.register()
+    TestTackle.register()
+#    GetCoursera.register()
+
+    tackle = TackleFactory.parse_args()
+    tackle.do()
+
+
+main()
