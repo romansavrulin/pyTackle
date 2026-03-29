@@ -4,11 +4,16 @@ import argparse
 class TackleFactory(object):
     tackles = {}
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        TackleFactory.tackles[cls.__name__] = cls
+
     def __init__(self, parser):
         pass
 
     @classmethod
     def register(cls):
+        """Kept for backward compatibility; subclasses are auto-registered on import."""
         TackleFactory.tackles[cls.__name__] = cls
 
     @classmethod

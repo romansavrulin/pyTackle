@@ -27,7 +27,7 @@ def import_submodules(package_name):
 # from tackles.CopyValidateMD5 import CopyValidateMD5
 
 path = pathlib.Path(__file__).parent.absolute()
-names = [x.name[:-3] for x in path.iterdir() if x.is_file() and re.search("^[a-z,A-Z,0-9]*\.py$", x.name)]
+names = [x.name[:-3] for x in path.iterdir() if x.is_file() and re.search(r"^[a-zA-Z0-9]*\.py$", x.name)]
 for name in names:
     importlib.import_module(f".{name}", __name__)
     exec(f"from {__name__}.{name} import {name}")
