@@ -454,6 +454,14 @@ class SetCreationTime(TackleFactory):
             rel_path = normalize_path(entry.raw_path)
             resolved = os.path.normpath(os.path.join(self.base_dir, rel_path))
 
+            # Check if the path exists at all before classifying
+            if not os.path.exists(resolved):
+                logger.error(
+                    'Path not found locally, skipping: %s', resolved,
+                )
+                failed += 1
+                continue
+
             # Directory-only filter
             if not is_directory_entry(entry, resolved):
                 logger.debug('Skipping non-directory: %s', rel_path)

@@ -254,7 +254,8 @@ Both are normalized to timezone-aware `datetime` objects in UTC.
 
 ## Error Handling
 
-- File/directory not found → log warning, skip entry, continue
+- Path not found on filesystem → log error, count as failed, skip entry, continue
+- Entry is not a directory → log debug, skip entry, continue
 - Permission denied → log error, skip entry, continue
 - Unsupported platform → log warning per-entry
 - Invalid timestamp format → log error, skip entry, continue
