@@ -64,6 +64,7 @@ read first line:
 ## CLI Interface
 
 ```
+# Apply mode (default):
 pytackle SetCreationTime \
     --listing <path-to-csv-file> \
     --base-dir <local-base-directory> \
@@ -72,12 +73,20 @@ pytackle SetCreationTime \
     [--script-base-path <prefix>] \
     [--dry-run] \
     [-v]
+
+# Generate-listing mode:
+pytackle SetCreationTime \
+    --base-dir <local-base-directory> \
+    --generate-listing <output-csv-path> \
+    [--types "f,d,l"] \
+    [-v]
 ```
 
 | Argument              | Required | Default        | Description                                                                                                  |
 |-----------------------|----------|----------------|--------------------------------------------------------------------------------------------------------------|
-| `--listing`           | Yes      | —              | Path to the CSV listing file                                                                                 |
+| `--listing`           | Cond.    | —              | Path to the CSV listing file.  Required unless `--generate-listing` is used.                                 |
 | `--base-dir`          | Yes      | —              | Local directory to resolve relative paths against                                                            |
+| `--generate-listing`  | No       | —              | Generate a Format-3 CSV listing of `--base-dir` and write it to the given path (see below)                   |
 | `--attr-map`          | No       | `creation:e`   | Comma-separated `attr:selector` pairs mapping filesystem attributes to listing columns (see below)           |
 | `--types`             | No       | `d`            | Comma-separated entry types to process: `f` (file), `d` (directory), `l` (symlink)                          |
 | `--script-base-path`  | No       | —              | Leading directory prefix to strip from listing paths before resolving against `--base-dir`                    |
@@ -137,6 +146,39 @@ Controls which filesystem entry types are processed.
 # Process everything
 --types="f,d,l"
 ```
+
+### `--generate-listing`
+
+Walks `--base-dir` recursively and writes a **Format 3** CSV listing to the
+specified output path.  The listing contains creation, access, and modification
+timestamps (in UTC) with relative paths and type markers.
+
+**Output format** (Format 3 — PowerShell-style with type marker, no header):
+
+```
+MM/DD/YYYY HH:MM:SS,MM/DD/YYYY HH:MM:SS,MM/DD/YYYY HH:MM:SS,<D|F|L>,<relative-path>
+```
+
+- Column 0: creation time (UTC) — uses `st_birthtime` on macOS/Windows, falls back to `st_ctime` on Linux
+- Column 1: last access time (UTC)
+- Column 2: last modification time (UTC)
+- Column 3: type marker — `D` (directory), `F` (file), `L` (symlink)
+- Column 4: path relative to `--base-dir`
+
+Respects `--types` for filtering which entry types to include.
+
+**Examples:**
+
+```bash
+# Generate listing of directories only (default --types=d)
+pytackle SetCreationTime --base-dir /data/photos --generate-listing listing.csv
+
+# Generate listing of all entry types
+pytackle SetCreationTime --base-dir /data/photos --generate-listing listing.csv --types="f,d,l"
+```
+
+The generated listing is compatible with the apply mode — it can be fed back
+via `--listing` to restore timestamps on another machine or after a copy.
 
 ---
 
@@ -215,6 +257,10 @@ class ListingEntry:
 - **`set_creation_time_windows`** — Windows ctypes implementation
 - **`set_creation_time_macos`** — macOS SetFile implementation
 - **`set_access_modify_time`** — cross-platform access/modify time setter via `os.utime`
+- **`generate_listing`** — walks a directory tree and writes a Format-3 CSV listing
+- **`_get_creation_time`** — cross-platform creation time from stat result (`st_birthtime` or `st_ctime`)
+- **`_format_ts_utc`** — formats epoch timestamp as `MM/DD/YYYY HH:MM:SS` in UTC
+- **`_entry_type_code`** — returns `D`/`F`/`L` type code for a filesystem path
 
 ### 2. Platform-Specific Creation Time Setting
 

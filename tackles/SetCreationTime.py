@@ -522,6 +522,106 @@ def set_access_modify_time(
 
 
 # ---------------------------------------------------------------------------
+# Listing generation helpers
+# ---------------------------------------------------------------------------
+
+def _get_creation_time(stat_result) -> float:
+    """Return the creation (birth) time from a stat result.
+
+    On macOS/Windows ``st_birthtime`` is available.  On Linux fall back to
+    ``st_ctime`` (metadata-change time — the closest available proxy).
+    """
+    try:
+        return stat_result.st_birthtime
+    except AttributeError:
+        return stat_result.st_ctime
+
+
+def _format_ts_utc(epoch: float) -> str:
+    """Format an epoch timestamp as ``MM/DD/YYYY HH:MM:SS`` in UTC."""
+    dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
+    return dt.strftime('%m/%d/%Y %H:%M:%S')
+
+
+def _entry_type_code(path: str) -> str:
+    """Return ``'D'`` for directory, ``'F'`` for file, ``'L'`` for symlink."""
+    if os.path.islink(path):
+        return 'L'
+    if os.path.isdir(path):
+        return 'D'
+    return 'F'
+
+
+def _type_code_to_filter(code: str) -> str:
+    """Map a listing type code (``D``/``F``/``L``) to a ``--types`` filter
+    char (``d``/``f``/``l``)."""
+    return code.lower()
+
+
+def generate_listing(
+    base_dir: str,
+    output_path: str,
+    allowed_types: set,
+) -> int:
+    """Walk *base_dir* and write a Format-3 CSV listing to *output_path*.
+
+    Returns the number of entries written.
+    """
+    count = 0
+    base = os.path.normpath(base_dir)
+
+    with open(output_path, 'w', encoding='utf-8', newline='') as fh:
+        writer = csv.writer(fh)
+        for dirpath, dirnames, filenames in os.walk(base):
+            # Collect all entries in this directory level
+            entries: List[str] = []
+            if 'd' in allowed_types:
+                entries.extend(
+                    os.path.join(dirpath, d) for d in dirnames
+                )
+            if 'f' in allowed_types:
+                entries.extend(
+                    os.path.join(dirpath, f) for f in filenames
+                    if not os.path.islink(os.path.join(dirpath, f))
+                )
+            if 'l' in allowed_types:
+                # Symlinks among files
+                entries.extend(
+                    os.path.join(dirpath, f) for f in filenames
+                    if os.path.islink(os.path.join(dirpath, f))
+                )
+                # Symlinks among dirs
+                entries.extend(
+                    os.path.join(dirpath, d) for d in dirnames
+                    if os.path.islink(os.path.join(dirpath, d))
+                )
+
+            # Also include the directory itself if it's the base
+            if dirpath == base and 'd' in allowed_types:
+                entries.insert(0, dirpath)
+
+            for full_path in entries:
+                try:
+                    st = os.lstat(full_path)
+                except OSError as exc:
+                    logger.warning('Cannot stat %s: %s', full_path, exc)
+                    continue
+
+                creation = _format_ts_utc(_get_creation_time(st))
+                access = _format_ts_utc(st.st_atime)
+                modify = _format_ts_utc(st.st_mtime)
+                type_code = _entry_type_code(full_path)
+
+                # Relative path from base_dir
+                rel = os.path.relpath(full_path, base)
+
+                writer.writerow([creation, access, modify, type_code, rel])
+                count += 1
+
+    return count
+
+
+# ---------------------------------------------------------------------------
 # Tackle class
 # ---------------------------------------------------------------------------
 
@@ -533,14 +633,30 @@ class SetCreationTime(TackleFactory):
         subparser.add_argument(
             '--listing',
             type=pathlib.Path,
-            required=True,
-            help='Path to the CSV listing file',
+            default=None,
+            help=(
+                'Path to the CSV listing file.  Required unless '
+                '--generate-listing is used.'
+            ),
         )
         subparser.add_argument(
             '--base-dir',
             type=pathlib.Path,
             required=True,
             help='Local base directory to resolve relative paths against',
+        )
+        subparser.add_argument(
+            '--generate-listing',
+            type=pathlib.Path,
+            default=None,
+            help=(
+                'Generate a Format-3 CSV listing of --base-dir and write it '
+                'to the given path.  The listing contains creation, access, '
+                'and modification timestamps with relative paths.  '
+                'Respects --types for filtering.  '
+                'When this option is used, --listing is not required and '
+                'no timestamps are applied.'
+            ),
         )
         subparser.add_argument(
             '--attr-map',
@@ -595,23 +711,15 @@ class SetCreationTime(TackleFactory):
         super().__init__(parser)
         options, _ = parser.parse_known_args()
 
-        self.listing_path = str(options.listing)
         self.base_dir = str(options.base_dir)
         self.script_base_path = options.script_base_path
         self.dry_run = options.dry_run
+        self.generate_listing_path: Optional[str] = (
+            str(options.generate_listing) if options.generate_listing else None
+        )
 
         if options.v:
             logger.setLevel(logging.DEBUG)
-
-        # ------------------------------------------------------------------
-        # Parse --attr-map
-        # ------------------------------------------------------------------
-        try:
-            self.attr_map: Dict[str, str] = parse_attr_map(options.attr_map)
-        except ValueError as exc:
-            logger.error('Invalid --attr-map: %s', exc)
-            sys.exit(1)
-        logger.info('Attribute map: %s', self.attr_map)
 
         # ------------------------------------------------------------------
         # Parse --types
@@ -624,21 +732,64 @@ class SetCreationTime(TackleFactory):
         logger.info('Processing entry types: %s', ', '.join(sorted(self.allowed_types)))
 
         # ------------------------------------------------------------------
-        # Validate paths
+        # Validate base-dir
         # ------------------------------------------------------------------
+        if not os.path.isdir(self.base_dir):
+            logger.error('Base directory not found: %s', self.base_dir)
+            sys.exit(1)
+
+        # ------------------------------------------------------------------
+        # Generate-listing mode — no listing file needed
+        # ------------------------------------------------------------------
+        if self.generate_listing_path is not None:
+            self.listing_path: Optional[str] = None
+            self.attr_map: Dict[str, str] = {}
+            return
+
+        # ------------------------------------------------------------------
+        # Apply mode — listing file required
+        # ------------------------------------------------------------------
+        if options.listing is None:
+            logger.error(
+                '--listing is required when --generate-listing is not used'
+            )
+            sys.exit(1)
+
+        self.listing_path = str(options.listing)
+
         if not os.path.isfile(self.listing_path):
             logger.error('Listing file not found: %s', self.listing_path)
             sys.exit(1)
 
-        if not os.path.isdir(self.base_dir):
-            logger.error('Base directory not found: %s', self.base_dir)
+        # ------------------------------------------------------------------
+        # Parse --attr-map
+        # ------------------------------------------------------------------
+        try:
+            self.attr_map = parse_attr_map(options.attr_map)
+        except ValueError as exc:
+            logger.error('Invalid --attr-map: %s', exc)
             sys.exit(1)
+        logger.info('Attribute map: %s', self.attr_map)
 
     # ------------------------------------------------------------------
     # Main processing
     # ------------------------------------------------------------------
 
     def do(self):
+        # Generate-listing mode
+        if self.generate_listing_path is not None:
+            count = generate_listing(
+                self.base_dir,
+                self.generate_listing_path,
+                self.allowed_types,
+            )
+            logger.info(
+                'Generated listing with %d entries: %s',
+                count, self.generate_listing_path,
+            )
+            return
+
+        # Apply mode
         entries = parse_listing(self.listing_path)
         logger.info('Parsed %d entries from listing', len(entries))
         self._do_attr_map(entries)
