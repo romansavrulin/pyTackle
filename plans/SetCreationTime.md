@@ -2,7 +2,7 @@
 
 ## Overview
 
-A new pyTackle command (`SetCreationTime`) that reads a file listing CSV, parses creation timestamps, and applies them as the **creation time** (aka birth time) to **directories** on the local filesystem. Cross-platform: Windows and macOS. Linux is best-effort (no standard API to set creation time).
+A pyTackle command (`SetCreationTime`) that reads a file listing CSV, parses timestamps, and applies them to **files, directories, and/or symlinks** on the local filesystem.  Supports setting **creation time**, **access time**, and **modification time** via a flexible attribute-mapping option.  Cross-platform: Windows and macOS for creation time; access/modify work everywhere via `os.utime`.  Linux is best-effort for creation time (no standard API).
 
 ---
 
@@ -67,23 +67,76 @@ read first line:
 pytackle SetCreationTime \
     --listing <path-to-csv-file> \
     --base-dir <local-base-directory> \
-    [--date-column <0-based-index>] \
+    [--attr-map "creation:1,access:2,modify:e"] \
+    [--types "f,d,l"] \
+    [--script-base-path <prefix>] \
     [--dry-run] \
     [-v]
 ```
 
-| Argument         | Required | Default   | Description                                                              |
-|------------------|----------|-----------|--------------------------------------------------------------------------|
-| `--listing`      | Yes      | —         | Path to the CSV listing file                                             |
-| `--base-dir`     | Yes      | —         | Local directory to resolve relative paths against                        |
-| `--date-column`  | No       | `earliest`| 0-based column index for the date to use, or `earliest` to pick minimum  |
-| `--dry-run`      | No       | False     | Preview changes without modifying timestamps                             |
-| `-v`             | No       | False     | Verbose logging output                                                   |
+| Argument              | Required | Default        | Description                                                                                                  |
+|-----------------------|----------|----------------|--------------------------------------------------------------------------------------------------------------|
+| `--listing`           | Yes      | —              | Path to the CSV listing file                                                                                 |
+| `--base-dir`          | Yes      | —              | Local directory to resolve relative paths against                                                            |
+| `--attr-map`          | No       | `creation:e`   | Comma-separated `attr:selector` pairs mapping filesystem attributes to listing columns (see below)           |
+| `--types`             | No       | `d`            | Comma-separated entry types to process: `f` (file), `d` (directory), `l` (symlink)                          |
+| `--script-base-path`  | No       | —              | Leading directory prefix to strip from listing paths before resolving against `--base-dir`                    |
+| `--dry-run`           | No       | False          | Preview changes without modifying timestamps                                                                 |
+| `-v`                  | No       | False          | Verbose logging output                                                                                       |
 
-### `--date-column` behavior
+### `--attr-map`
 
-- Default `earliest`: scan all date columns in the row and pick the **earliest** (minimum) timestamp
-- If a number is provided (e.g., `0`, `1`, `2`): use that specific 0-based column index as the creation time source
+Maps filesystem timestamp attributes to listing column selectors.
+
+**Attributes:** `creation`, `access`, `modify`
+
+**Selectors:**
+- A **0-based column index** (e.g., `0`, `1`, `2`, `3`) — use that specific date column from the listing row
+- `earliest` (alias `e`) — pick the **minimum** (oldest) date from all date columns in the row
+- `latest` (alias `l`) — pick the **maximum** (newest) date from all date columns in the row
+
+**Default:** `creation:e` — sets creation time to the earliest date in the row.
+
+**Examples:**
+
+```bash
+# Set creation time from column 1, access from column 2, modify from earliest
+--attr-map="creation:1,access:2,modify:e"
+
+# Set only modification time to the latest date in the row
+--attr-map="modify:l"
+
+# Set all three attributes from specific columns
+--attr-map="creation:0,access:1,modify:2"
+
+# Set all three to earliest (using alias)
+--attr-map="creation:e,access:e,modify:e"
+```
+
+### `--types`
+
+Controls which filesystem entry types are processed.
+
+| Code | Meaning   |
+|------|-----------|
+| `f`  | File      |
+| `d`  | Directory |
+| `l`  | Symlink   |
+
+**Default:** `d` (directories only).
+
+**Examples:**
+
+```bash
+# Process only directories (default)
+--types="d"
+
+# Process files and directories
+--types="f,d"
+
+# Process everything
+--types="f,d,l"
+```
 
 ---
 
@@ -92,7 +145,9 @@ pytackle SetCreationTime \
 ```mermaid
 flowchart TD
     A[CLI: pytackle SetCreationTime] --> B[Parse arguments]
-    B --> C[Read listing file as UTF-8]
+    B --> B1[Parse --attr-map]
+    B1 --> B2[Parse --types]
+    B2 --> C[Read listing file as UTF-8]
     C --> D{Auto-detect format}
     D -->|Header = CreationTimeUTC| E[Format 2 parser - 4 cols with header]
     D -->|6 columns no header| F[Format 1 parser - Linux-style]
@@ -101,27 +156,18 @@ flowchart TD
     F --> H
     G --> H
     H --> I[For each entry]
-    I --> J{Is directory?}
-    J -->|Format 1/3: check type field| K{type == directory/D?}
-    J -->|Format 2: check filesystem| L{os.path.isdir?}
-    K -->|No| M[Skip - not a directory]
-    L -->|No| M
-    K -->|Yes| N[Select date column]
-    L -->|Yes| N
-    N --> O{--date-column?}
-    O -->|earliest| P[Pick min of all date columns]
-    O -->|specific index| Q[Use column at index]
-    P --> R[Resolve path: strip UNC + join with base_dir]
-    Q --> R
+    I --> J{classify_entry → type code}
+    J --> J1{type in --types?}
+    J1 -->|No| M[Skip - type not allowed]
+    J1 -->|Yes| N[Resolve selector per attribute from --attr-map]
+    N --> R[Resolve path: strip UNC + join with base_dir]
     R --> S{--dry-run?}
-    S -->|Yes| T[Log: would set creation time]
-    S -->|No| U{Detect platform}
-    U -->|Windows| V[set_creation_time_windows via ctypes]
-    U -->|macOS| W[set_creation_time_macos via SetFile]
-    U -->|Linux| X[Log warning: not supported]
-    V --> Y[Log success/failure]
-    W --> Y
-    X --> Y
+    S -->|Yes| T[Log: would set timestamps]
+    S -->|No| U[Apply timestamps]
+    U --> U1[creation → set_creation_time platform dispatch]
+    U --> U2[access/modify → os.utime]
+    U1 --> Y[Log success/failure]
+    U2 --> Y
 ```
 
 ---
@@ -134,9 +180,11 @@ Single file containing the tackle class and all helpers.
 
 #### Class: `SetCreationTime` extends `TackleFactory`
 
-- **`arg_parser`** — registers CLI arguments
-- **`__init__`** — parses args, validates paths, reads and parses listing
-- **`do`** — iterates entries and applies creation times
+- **`arg_parser`** — registers CLI arguments (including `--attr-map`, `--types`)
+- **`__init__`** — parses args, validates paths, parses `--attr-map` and `--types`
+- **`do`** — iterates entries and applies timestamps via `_do_attr_map`
+- **`_do_attr_map`** — applies per-attribute timestamps according to `--attr-map`
+- **`_apply_attrs`** — static method that calls the appropriate setter for each attribute
 
 #### Data class: `ListingEntry`
 
@@ -152,16 +200,21 @@ class ListingEntry:
 
 - **`detect_format`** — reads first line, returns format identifier
 - **`parse_listing`** — dispatches to format-specific parser, returns list of `ListingEntry`
-- **`parse_linux_row`** — parses format 1 row
-- **`parse_powershell_header_row`** — parses format 2 row
-- **`parse_powershell_notype_row`** — parses format 3 row
+- **`_parse_row_linux`** — parses format 1 row
+- **`_parse_row_ps_header`** — parses format 2 row
+- **`_parse_row_ps_type`** — parses format 3 row
 - **`parse_timestamp_linux`** — parses `2020-08-20 06:15:03.491092220 +0000`
 - **`parse_timestamp_powershell`** — parses `02/24/2023 14:04:32`
 - **`normalize_path`** — strips UNC prefix, converts backslashes to forward slashes
-- **`select_date`** — picks earliest or specific column date
-- **`set_creation_time`** — dispatcher for platform-specific implementation
+- **`parse_attr_map`** — parses `--attr-map` string into `{attr: selector}` dict; expands aliases `e`→`earliest`, `l`→`latest`
+- **`parse_types`** — parses `--types` string into a set of type codes
+- **`resolve_selector`** — resolves a single attr-map selector (`earliest`/`latest`/index) against an entry
+- **`classify_entry`** — returns `'d'`/`'f'`/`'l'` type code for an entry
+- **`is_directory_entry`** — backward-compatible directory check
+- **`set_creation_time`** — dispatcher for platform-specific creation-time implementation
 - **`set_creation_time_windows`** — Windows ctypes implementation
 - **`set_creation_time_macos`** — macOS SetFile implementation
+- **`set_access_modify_time`** — cross-platform access/modify time setter via `os.utime`
 
 ### 2. Platform-Specific Creation Time Setting
 
@@ -235,15 +288,27 @@ def normalize_path(raw_path: str) -> str:
 
 Both are normalized to timezone-aware `datetime` objects in UTC.
 
-### 5. Directory-Only Filtering
+### 5. Entry-Type Filtering
 
-| Format | How to determine directory |
-|--------|--------------------------|
-| Format 1 | Column 4 == `directory` |
-| Format 2 | No type column — check `os.path.isdir(resolved_path)` on local filesystem |
-| Format 3 | Column 3 == `D` |
+The `--types` option controls which entry types are processed.  Classification
+uses `classify_entry()` which returns `'d'`, `'f'`, or `'l'`:
 
-### 6. UTF-8 and Network Path Support
+1. **Symlinks** are detected first via `os.path.islink()` — a symlink to a directory is classified as `'l'`, not `'d'`
+2. **Directories vs files** — if the listing has a type column it is used; otherwise `os.path.isdir()` is consulted
+
+| Format   | How type is determined                                                    |
+|----------|---------------------------------------------------------------------------|
+| Format 1 | Column 4: `directory` → `d`, else `f`; symlinks detected via filesystem  |
+| Format 2 | No type column — filesystem check (`islink` → `l`, `isdir` → `d`, else `f`) |
+| Format 3 | Column 3: `D` → `d`, else `f`; symlinks detected via filesystem          |
+
+### 6. Access & Modification Time Setting
+
+When `--attr-map` includes `access` and/or `modify`, `set_access_modify_time()` is called.
+This uses `os.utime()` which works on **all platforms** (Windows, macOS, Linux).
+The current stat values are read first so that only the requested timestamps are changed.
+
+### 7. UTF-8 and Network Path Support
 
 - Listing file opened with `encoding='utf-8-sig'` to handle optional BOM from Windows tools
 - All path operations use `str` (Python 3 native Unicode)

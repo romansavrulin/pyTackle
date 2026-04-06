@@ -1,13 +1,18 @@
 """
-SetCreationTime tackle — reads a CSV file listing and sets directory creation
-times on the local filesystem.
+SetCreationTime tackle — reads a CSV file listing and sets file/directory
+timestamps on the local filesystem.
 
 Supports three listing formats (auto-detected):
   Format 1: Linux-style, 6 columns, no header
   Format 2: PowerShell-style, 4 columns, with header
   Format 3: PowerShell-style with type marker, 5 columns, no header
 
-Cross-platform: Windows (ctypes/Win32), macOS (SetFile), Linux (warning only).
+Cross-platform: Windows (ctypes/Win32), macOS (SetFile), Linux (warning only
+for creation time; access/modify work everywhere via os.utime).
+
+Attribute mapping (--attr-map) lets you choose which listing columns drive
+which filesystem timestamps.  Entry-type filtering (--types) lets you
+restrict processing to files, directories, and/or symlinks.
 """
 
 import csv
@@ -21,7 +26,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from tackles.TackleFactory import TackleFactory
 
@@ -29,6 +34,15 @@ logging.basicConfig(
     level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Valid attribute names and meta-selectors for --attr-map
+# ---------------------------------------------------------------------------
+
+VALID_ATTRS = ('creation', 'access', 'modify')
+META_SELECTORS = ('earliest', 'latest')
+# Short aliases accepted in --attr-map selectors
+_SELECTOR_ALIASES = {'e': 'earliest', 'l': 'latest'}
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -237,40 +251,140 @@ def parse_listing(listing_path: str) -> List[ListingEntry]:
 
 
 # ---------------------------------------------------------------------------
+# Attr-map parsing
+# ---------------------------------------------------------------------------
+
+def parse_attr_map(raw: str) -> Dict[str, str]:
+    """Parse an ``--attr-map`` string into ``{attr_name: selector}`` dict.
+
+    *raw* is a comma-separated list of ``attr:selector`` pairs, e.g.
+    ``"creation:1, access:2, modify:earliest"`` or using short aliases
+    ``"creation:e, modify:l"``.
+
+    Each *selector* is either a 0-based column index (as a string digit) or
+    one of the meta-selectors ``earliest`` (alias ``e``) / ``latest``
+    (alias ``l``).
+
+    Returns a dict like ``{'creation': '1', 'access': '2', 'modify': 'earliest'}``.
+    Aliases are expanded to their canonical form in the returned dict.
+    """
+    attr_map: Dict[str, str] = {}
+    for token in raw.split(','):
+        token = token.strip()
+        if not token:
+            continue
+        if ':' not in token:
+            raise ValueError(
+                f'Invalid attr-map token {token!r} — expected "attr:selector"'
+            )
+        attr, selector = token.split(':', 1)
+        attr = attr.strip().lower()
+        selector = selector.strip().lower()
+        if attr not in VALID_ATTRS:
+            raise ValueError(
+                f'Unknown attribute {attr!r} in --attr-map; '
+                f'valid attributes: {", ".join(VALID_ATTRS)}'
+            )
+        # Expand short aliases
+        selector = _SELECTOR_ALIASES.get(selector, selector)
+        if selector not in META_SELECTORS:
+            # Must be a non-negative integer
+            try:
+                int(selector)
+            except ValueError:
+                raise ValueError(
+                    f'Invalid selector {selector!r} for attribute {attr!r}; '
+                    f'expected a 0-based column index or one of: '
+                    f'{", ".join(META_SELECTORS)} (aliases: e, l)'
+                )
+        attr_map[attr] = selector
+    if not attr_map:
+        raise ValueError('--attr-map produced an empty mapping')
+    return attr_map
+
+
+def parse_types(raw: str) -> set:
+    """Parse a ``--types`` string into a set of single-char type codes.
+
+    *raw* is a comma-separated list of type codes: ``f`` (file), ``d``
+    (directory), ``l`` (symlink).  Returns e.g. ``{'f', 'd'}``.
+    """
+    valid = {'f', 'd', 'l'}
+    result = set()
+    for token in raw.split(','):
+        token = token.strip().lower()
+        if not token:
+            continue
+        if token not in valid:
+            raise ValueError(
+                f'Unknown type code {token!r} in --types; '
+                f'valid codes: f (file), d (directory), l (symlink)'
+            )
+        result.add(token)
+    if not result:
+        raise ValueError('--types produced an empty set')
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Date selection
 # ---------------------------------------------------------------------------
 
-def select_date(
+def resolve_selector(
     entry: ListingEntry,
-    date_column: Optional[int],
+    selector: str,
 ) -> Optional[datetime]:
-    """Pick the target creation time from an entry's date columns.
+    """Resolve a single attr-map *selector* against an entry's date list.
 
-    *date_column* ``None`` means "earliest"; an integer selects that index.
+    *selector* is ``"earliest"``, ``"latest"``, or a 0-based column index
+    string.
     """
     if not entry.dates:
         return None
-    if date_column is not None:
-        if 0 <= date_column < len(entry.dates):
-            return entry.dates[date_column]
-        logger.warning(
-            'date-column %d out of range (entry has %d date columns) for %s',
-            date_column, len(entry.dates), entry.raw_path,
-        )
-        return None
-    return min(entry.dates)
+    if selector == 'earliest':
+        return min(entry.dates)
+    if selector == 'latest':
+        return max(entry.dates)
+    idx = int(selector)
+    if 0 <= idx < len(entry.dates):
+        return entry.dates[idx]
+    logger.warning(
+        'Column index %d out of range (entry has %d date columns) for %s',
+        idx, len(entry.dates), entry.raw_path,
+    )
+    return None
 
 
 # ---------------------------------------------------------------------------
-# Directory filtering
+# Entry-type classification
 # ---------------------------------------------------------------------------
+
+def classify_entry(entry: ListingEntry, resolved_path: str) -> str:
+    """Return a single-char type code for *entry*: ``'d'``, ``'f'``, or ``'l'``.
+
+    Symlinks are detected via the filesystem.  If the listing carries a type
+    marker it is used for the file-vs-directory distinction; otherwise the
+    filesystem is consulted.
+    """
+    # Symlinks must be checked first (a symlink to a dir is still a symlink)
+    if os.path.islink(resolved_path):
+        return 'l'
+    if entry.entry_type is not None:
+        if entry.entry_type.lower() in ('directory', 'd'):
+            return 'd'
+        return 'f'
+    # No type column — fall back to filesystem
+    if os.path.isdir(resolved_path):
+        return 'd'
+    return 'f'
+
 
 def is_directory_entry(entry: ListingEntry, resolved_path: str) -> bool:
-    """Decide whether *entry* represents a directory."""
-    if entry.entry_type is not None:
-        return entry.entry_type.lower() in ('directory', 'd')
-    # Format 2 — no type column; check the filesystem
-    return os.path.isdir(resolved_path)
+    """Decide whether *entry* represents a directory.
+
+    Kept for backward compatibility with ``--date-column`` legacy mode.
+    """
+    return classify_entry(entry, resolved_path) == 'd'
 
 
 # ---------------------------------------------------------------------------
@@ -388,12 +502,31 @@ def set_creation_time(path: str, dt: datetime) -> None:
         )
 
 
+def set_access_modify_time(
+    path: str,
+    access_dt: Optional[datetime] = None,
+    modify_dt: Optional[datetime] = None,
+) -> None:
+    """Set access and/or modification time using :func:`os.utime`.
+
+    Works on all platforms.  Pass ``None`` for either argument to leave that
+    timestamp unchanged.
+    """
+    # os.utime expects (atime, mtime) as floats (epoch seconds).
+    # Passing None for the whole tuple means "set both to now", so we need
+    # to read the current values for whichever side we're not changing.
+    stat = os.stat(path)
+    atime = access_dt.timestamp() if access_dt is not None else stat.st_atime
+    mtime = modify_dt.timestamp() if modify_dt is not None else stat.st_mtime
+    os.utime(path, (atime, mtime))
+
+
 # ---------------------------------------------------------------------------
 # Tackle class
 # ---------------------------------------------------------------------------
 
 class SetCreationTime(TackleFactory):
-    """Read a directory listing CSV and set creation times on local directories."""
+    """Read a directory listing CSV and set timestamps on local entries."""
 
     @classmethod
     def arg_parser(cls, subparser):
@@ -410,12 +543,28 @@ class SetCreationTime(TackleFactory):
             help='Local base directory to resolve relative paths against',
         )
         subparser.add_argument(
-            '--date-column',
+            '--attr-map',
             type=str,
-            default='earliest',
+            default='creation:e',
             help=(
-                '0-based column index for the date to use as creation time, '
-                'or "earliest" (default) to pick the minimum date'
+                'Comma-separated mapping of filesystem attributes to listing '
+                'column selectors.  Format: "attr:selector[,attr:selector,…]". '
+                'Attributes: creation, access, modify.  '
+                'Selectors: a 0-based column index, or "earliest" / "latest" '
+                '(short: "e" / "l") to pick the min/max date from the row.  '
+                'Default: "creation:e" (set creation time to earliest date).  '
+                'Example: --attr-map="creation:1,access:2,modify:e"'
+            ),
+        )
+        subparser.add_argument(
+            '--types',
+            type=str,
+            default='d',
+            help=(
+                'Comma-separated list of entry types to process: '
+                'f (file), d (directory), l (symlink).  '
+                'Default: "d" (directories only).  '
+                'Example: --types="f,d,l"'
             ),
         )
         subparser.add_argument(
@@ -454,20 +603,29 @@ class SetCreationTime(TackleFactory):
         if options.v:
             logger.setLevel(logging.DEBUG)
 
-        # Parse --date-column
-        if options.date_column == 'earliest':
-            self.date_column: Optional[int] = None
-        else:
-            try:
-                self.date_column = int(options.date_column)
-            except ValueError:
-                logger.error(
-                    '--date-column must be "earliest" or a 0-based integer, '
-                    'got %r', options.date_column,
-                )
-                sys.exit(1)
+        # ------------------------------------------------------------------
+        # Parse --attr-map
+        # ------------------------------------------------------------------
+        try:
+            self.attr_map: Dict[str, str] = parse_attr_map(options.attr_map)
+        except ValueError as exc:
+            logger.error('Invalid --attr-map: %s', exc)
+            sys.exit(1)
+        logger.info('Attribute map: %s', self.attr_map)
 
+        # ------------------------------------------------------------------
+        # Parse --types
+        # ------------------------------------------------------------------
+        try:
+            self.allowed_types: set = parse_types(options.types)
+        except ValueError as exc:
+            logger.error('Invalid --types: %s', exc)
+            sys.exit(1)
+        logger.info('Processing entry types: %s', ', '.join(sorted(self.allowed_types)))
+
+        # ------------------------------------------------------------------
         # Validate paths
+        # ------------------------------------------------------------------
         if not os.path.isfile(self.listing_path):
             logger.error('Listing file not found: %s', self.listing_path)
             sys.exit(1)
@@ -476,10 +634,17 @@ class SetCreationTime(TackleFactory):
             logger.error('Base directory not found: %s', self.base_dir)
             sys.exit(1)
 
+    # ------------------------------------------------------------------
+    # Main processing
+    # ------------------------------------------------------------------
+
     def do(self):
         entries = parse_listing(self.listing_path)
         logger.info('Parsed %d entries from listing', len(entries))
+        self._do_attr_map(entries)
 
+    def _do_attr_map(self, entries: List[ListingEntry]) -> None:
+        """Apply timestamps according to ``--attr-map``."""
         success = 0
         skipped = 0
         failed = 0
@@ -488,65 +653,79 @@ class SetCreationTime(TackleFactory):
             rel_path = normalize_path(entry.raw_path, self.script_base_path)
             resolved = os.path.normpath(os.path.join(self.base_dir, rel_path))
 
-            # Check if the path exists at all before classifying
             if not os.path.exists(resolved):
-                logger.error(
-                    'Path not found locally, skipping: %s', resolved,
-                )
+                logger.error('Path not found locally, skipping: %s', resolved)
                 failed += 1
                 continue
 
-            # Directory-only filter
-            if not is_directory_entry(entry, resolved):
-                logger.debug('Skipping non-directory: %s', rel_path)
-                skipped += 1
-                continue
-
-            # Check the directory exists on the local filesystem
-            if not os.path.isdir(resolved):
-                logger.warning(
-                    'Directory not found locally, skipping: %s', resolved,
+            # Type filter
+            entry_type = classify_entry(entry, resolved)
+            if entry_type not in self.allowed_types:
+                logger.debug(
+                    'Skipping %s (type=%s, allowed=%s)',
+                    rel_path, entry_type, self.allowed_types,
                 )
                 skipped += 1
                 continue
 
-            # Select the date to apply
-            target_dt = select_date(entry, self.date_column)
-            if target_dt is None:
-                logger.warning(
-                    'No valid date for %s, skipping', rel_path,
-                )
+            # Resolve dates for each requested attribute
+            resolved_attrs: Dict[str, datetime] = {}
+            skip_entry = False
+            for attr, selector in self.attr_map.items():
+                dt = resolve_selector(entry, selector)
+                if dt is None:
+                    logger.warning(
+                        'No valid date for attr=%s selector=%s on %s, skipping entry',
+                        attr, selector, rel_path,
+                    )
+                    skip_entry = True
+                    break
+                resolved_attrs[attr] = dt
+
+            if skip_entry:
                 skipped += 1
                 continue
 
             if self.dry_run:
-                logger.info(
-                    '[DRY-RUN] Would set creation time of %s to %s',
-                    resolved, target_dt.isoformat(),
+                parts = ', '.join(
+                    f'{a}={d.isoformat()}' for a, d in resolved_attrs.items()
                 )
+                logger.info('[DRY-RUN] Would set %s on %s', parts, resolved)
                 success += 1
                 continue
 
+            # Apply timestamps
             try:
-                set_creation_time(resolved, target_dt)
-                logger.info(
-                    'Set creation time of %s to %s',
-                    resolved, target_dt.isoformat(),
+                self._apply_attrs(resolved, resolved_attrs)
+                parts = ', '.join(
+                    f'{a}={d.isoformat()}' for a, d in resolved_attrs.items()
                 )
+                logger.info('Set %s on %s', parts, resolved)
                 success += 1
             except NotImplementedError as exc:
                 logger.warning('%s — skipping %s', exc, resolved)
                 skipped += 1
             except OSError as exc:
-                logger.error('Failed to set creation time for %s: %s', resolved, exc)
+                logger.error('Failed for %s: %s', resolved, exc)
                 failed += 1
             except Exception as exc:
-                logger.error(
-                    'Unexpected error for %s: %s', resolved, exc,
-                )
+                logger.error('Unexpected error for %s: %s', resolved, exc)
                 failed += 1
 
         logger.info(
             'Done. success=%d  skipped=%d  failed=%d',
             success, skipped, failed,
         )
+
+    @staticmethod
+    def _apply_attrs(
+        path: str, attrs: Dict[str, datetime],
+    ) -> None:
+        """Apply resolved attribute datetimes to *path*."""
+        if 'creation' in attrs:
+            set_creation_time(path, attrs['creation'])
+
+        access_dt = attrs.get('access')
+        modify_dt = attrs.get('modify')
+        if access_dt is not None or modify_dt is not None:
+            set_access_modify_time(path, access_dt, modify_dt)
