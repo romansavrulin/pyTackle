@@ -90,19 +90,40 @@ def parse_timestamp_powershell(raw: str) -> datetime:
 # Path helpers
 # ---------------------------------------------------------------------------
 
-def normalize_path(raw_path: str) -> str:
-    """Strip UNC prefix and normalise separators.
+def normalize_path(raw_path: str, script_base_path: Optional[str] = None) -> str:
+    """Strip UNC prefix, normalise separators, and optionally remove a leading
+    base-path prefix.
 
     ``\\\\server\\share\\rest\\of\\path`` → ``rest/of/path``
+
+    When *script_base_path* is given the corresponding leading directory
+    components are stripped from the result so that only the relative tail
+    remains.  For example, with ``script_base_path="photos/vacation"`` the
+    path ``photos/vacation/2020/img.jpg`` becomes ``2020/img.jpg``.
     """
     path = raw_path.strip().strip('"')
     if path.startswith('\\\\') or path.startswith('//'):
         parts = path.replace('\\', '/').lstrip('/').split('/')
         # parts[0] = server, parts[1] = share, parts[2:] = relative
         if len(parts) > 2:
-            return os.path.join(*parts[2:])
-        return '.'
-    return path.replace('\\', '/')
+            path = os.path.join(*parts[2:])
+        else:
+            path = '.'
+    else:
+        path = path.replace('\\', '/')
+
+    if script_base_path is not None:
+        # Normalise both sides so comparison is separator-agnostic
+        norm = os.path.normpath(path)
+        base = os.path.normpath(script_base_path)
+        # Use os.path.relpath to strip the prefix; if the path doesn't
+        # start with the base the result will contain '..' components —
+        # in that case fall back to the original normalised path.
+        rel = os.path.relpath(norm, base)
+        if not rel.startswith('..'):
+            path = rel
+
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +419,18 @@ class SetCreationTime(TackleFactory):
             ),
         )
         subparser.add_argument(
+            '--script-base-path',
+            type=str,
+            default=None,
+            help=(
+                'Leading directory prefix to strip from paths in the listing '
+                'before resolving against --base-dir.  For example, if the '
+                'listing contains "server/share/photos/2020" and you pass '
+                '--script-base-path "server/share", the resolved relative '
+                'path becomes "photos/2020".'
+            ),
+        )
+        subparser.add_argument(
             '--dry-run',
             action='store_true',
             default=False,
@@ -415,6 +448,7 @@ class SetCreationTime(TackleFactory):
 
         self.listing_path = str(options.listing)
         self.base_dir = str(options.base_dir)
+        self.script_base_path = options.script_base_path
         self.dry_run = options.dry_run
 
         if options.v:
@@ -451,7 +485,7 @@ class SetCreationTime(TackleFactory):
         failed = 0
 
         for entry in entries:
-            rel_path = normalize_path(entry.raw_path)
+            rel_path = normalize_path(entry.raw_path, self.script_base_path)
             resolved = os.path.normpath(os.path.join(self.base_dir, rel_path))
 
             # Check if the path exists at all before classifying
