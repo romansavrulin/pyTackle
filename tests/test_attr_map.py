@@ -1,0 +1,129 @@
+"""Tests for common/attr_map.py."""
+
+from __future__ import annotations
+
+import pytest
+
+from common.attr_map import (
+    CANONICAL_MAP,
+    CORE_ATTRS,
+    DATETIME_ATTRS,
+    METADATA_ATTRS,
+    VALID_ATTRS,
+    parse_attr_map,
+)
+
+
+# ------------------------------------------------------------------
+# Constants
+# ------------------------------------------------------------------
+
+class TestConstants:
+    """Verify the module-level constant tuples and dicts."""
+
+    def test_canonical_map_has_all_nine_attrs(self):
+        assert len(CANONICAL_MAP) == 9
+        for attr in VALID_ATTRS:
+            assert attr in CANONICAL_MAP
+
+    def test_path_is_column_8(self):
+        assert CANONICAL_MAP["path"] == "8"
+
+    def test_core_attrs(self):
+        assert set(CORE_ATTRS) == {"path", "checksum", "size"}
+
+    def test_metadata_attrs(self):
+        assert set(METADATA_ATTRS) == {
+            "creation", "access", "modify", "permissions", "uid", "gid",
+        }
+
+    def test_datetime_attrs(self):
+        assert set(DATETIME_ATTRS) == {"creation", "access", "modify"}
+
+    def test_valid_attrs_has_nine(self):
+        assert len(VALID_ATTRS) == 9
+
+
+# ------------------------------------------------------------------
+# parse_attr_map — valid inputs
+# ------------------------------------------------------------------
+
+class TestParseAttrMapValid:
+    """Happy-path tests for parse_attr_map()."""
+
+    def test_single_attr(self):
+        result = parse_attr_map("path:0")
+        assert result == {"path": "0"}
+
+    def test_multiple_attrs(self):
+        result = parse_attr_map("path:0, size:1, creation:2")
+        assert result == {"path": "0", "size": "1", "creation": "2"}
+
+    def test_all_nine_attrs(self):
+        raw = ", ".join(f"{attr}:{idx}" for idx, attr in enumerate(VALID_ATTRS))
+        result = parse_attr_map(raw)
+        assert len(result) == 9
+        for idx, attr in enumerate(VALID_ATTRS):
+            assert result[attr] == str(idx)
+
+
+# ------------------------------------------------------------------
+# parse_attr_map — meta-selectors
+# ------------------------------------------------------------------
+
+class TestParseAttrMapMetaSelectors:
+    """Tests for earliest/latest meta-selectors and aliases."""
+
+    def test_earliest_selector(self):
+        result = parse_attr_map("creation:earliest")
+        assert result == {"creation": "earliest"}
+
+    def test_latest_selector(self):
+        result = parse_attr_map("modify:latest")
+        assert result == {"modify": "latest"}
+
+    def test_alias_e(self):
+        result = parse_attr_map("access:e")
+        assert result == {"access": "earliest"}
+
+    def test_alias_l(self):
+        result = parse_attr_map("creation:l")
+        assert result == {"creation": "latest"}
+
+    @pytest.mark.parametrize("attr", ["size", "path", "permissions", "uid", "gid", "checksum"])
+    def test_meta_selector_rejected_for_non_datetime(self, attr):
+        with pytest.raises(ValueError, match="only valid for datetime"):
+            parse_attr_map(f"{attr}:earliest")
+
+    @pytest.mark.parametrize("attr", ["size", "path", "permissions", "uid", "gid", "checksum"])
+    def test_meta_selector_latest_rejected_for_non_datetime(self, attr):
+        with pytest.raises(ValueError, match="only valid for datetime"):
+            parse_attr_map(f"{attr}:latest")
+
+
+# ------------------------------------------------------------------
+# parse_attr_map — error cases
+# ------------------------------------------------------------------
+
+class TestParseAttrMapErrors:
+    """Error-handling tests for parse_attr_map()."""
+
+    def test_unknown_attr_name(self):
+        with pytest.raises(ValueError, match="Unknown attribute"):
+            parse_attr_map("bogus:0")
+
+    def test_missing_colon(self):
+        with pytest.raises(ValueError, match='expected "attr:selector"'):
+            parse_attr_map("path0")
+
+    def test_empty_string(self):
+        with pytest.raises(ValueError, match="empty mapping"):
+            parse_attr_map("")
+
+    def test_negative_index(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            parse_attr_map("path:-1")
+
+    def test_non_integer_selector_for_non_datetime(self):
+        with pytest.raises(ValueError, match="Invalid selector"):
+            parse_attr_map("size:abc")

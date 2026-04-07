@@ -19,12 +19,18 @@ dependencies = [
     "sqlalchemy>=2.0.0",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
 [project.scripts]
 pytackle = "tackles._cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["tackles*"]
+include = ["tackles*", "common*"]
 
 [tool.setuptools]
 py-modules = ["EnvDefault"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
