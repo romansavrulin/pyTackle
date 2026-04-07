@@ -3,15 +3,34 @@ import re
 import unicodedata
 import shutil
 import os
-import hashlib
 import logging
 
+from common.FileEntry import FileEntry
 from tackles.TackleFactory import TackleFactory
 
 logging.basicConfig(
     level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('root')
+
+# Lenient pattern that accepts both single-space and double-space separators,
+# matching the original behaviour of the tackle.
+_MD5_LINE_RE = re.compile(r'(?P<md5>\w+)\s(?P<path>.*$)')
+
+
+def _parse_md5_line(line: str) -> FileEntry | None:
+    """Parse an md5sum-style line into a :class:`FileEntry`.
+
+    Accepts both the canonical two-space format produced by ``md5sum`` and the
+    single-space variant that some tools emit.  Returns *None* when the line
+    does not match.
+    """
+    m = _MD5_LINE_RE.search(line)
+    if m is None:
+        return None
+    hexdigest = m.group('md5')
+    path = unicodedata.normalize('NFC', m.group('path'))
+    return FileEntry(path=path, checksum=f'md5:{hexdigest}')
 
 
 class CopyValidateMD5(TackleFactory):
@@ -49,55 +68,49 @@ class CopyValidateMD5(TackleFactory):
     def do(self):
         with open(self.from_file) as file:
             for line in file:
-                for m in re.finditer('(?P<md5>\\w+)\\s(?P<path>.*$)', line):
+                entry = _parse_md5_line(line)
+                if entry is None:
+                    continue
 
-                    src_file_rel_path = unicodedata.normalize('NFC', m.group("path"))
-                    md5sum = m.group('md5')
-                    src_file_rel_dir_name = os.path.dirname(src_file_rel_path)
+                src_file_rel_path = entry.path
+                md5sum = entry.checksum.removeprefix('md5:')
+                src_file_rel_dir_name = os.path.dirname(src_file_rel_path)
 
-                    src_file = pathlib.PurePosixPath(f'{self.from_dir}/{src_file_rel_path}')
-                    if not os.path.isfile(src_file):
-                        logger.error(f'Source doesn\'t exists: {src_file_rel_path}')
-                        continue
+                src_file = pathlib.PurePosixPath(f'{self.from_dir}/{src_file_rel_path}')
+                if not os.path.isfile(src_file):
+                    logger.error(f'Source doesn\'t exists: {src_file_rel_path}')
+                    continue
 
-                    with open(src_file, "rb") as f:
-                        file_hash = hashlib.md5()
-                        while chunk := f.read(8192):
-                            file_hash.update(chunk)
+                src_entry = FileEntry(path=str(src_file))
+                hex_digest = src_entry.calculate_checksum(algorithm='md5')
 
-                    hex_digest = file_hash.hexdigest()
+                if hex_digest != md5sum:
+                    logger.error(f'Source checksum ERROR: {md5sum}\t{src_file_rel_path}')
+                    continue
 
-                    if hex_digest != md5sum:
-                        logger.error(f'Source checksum ERROR: {md5sum}\t{src_file_rel_path}')
-                        continue
+                target_subdir = pathlib.PurePosixPath(f'{self.to_dir}/{src_file_rel_dir_name}')
+                target_filename = pathlib.PurePosixPath(f'{self.to_dir}/{src_file_rel_path}')
 
-                    target_subdir = pathlib.PurePosixPath(f'{self.to_dir}/{src_file_rel_dir_name}')
-                    target_filename = pathlib.PurePosixPath(f'{self.to_dir}/{src_file_rel_path}')
-
-                    if not os.path.isdir(target_subdir):
-                        logger.debug(f'Creating target subdir "{target_subdir}"')
-                        try:
-                            os.makedirs(target_subdir, mode=0o777, exist_ok=True)
-                        except Exception as e:
-                            logger.error(
-                                f'Unable to create target subdir {target_subdir} with {e} for: {src_file_rel_path}')
-                            continue
+                if not os.path.isdir(target_subdir):
+                    logger.debug(f'Creating target subdir "{target_subdir}"')
                     try:
-                        shutil.copy2(src_file, target_subdir)
+                        os.makedirs(target_subdir, mode=0o777, exist_ok=True)
                     except Exception as e:
-                        logger.error(f'Unable to copy to target with {e} for: {src_file_rel_path}')
+                        logger.error(
+                            f'Unable to create target subdir {target_subdir} with {e} for: {src_file_rel_path}')
                         continue
-                    logger.debug(f'Target copy OK: {target_filename}')
+                try:
+                    shutil.copy2(src_file, target_subdir)
+                except Exception as e:
+                    logger.error(f'Unable to copy to target with {e} for: {src_file_rel_path}')
+                    continue
+                logger.debug(f'Target copy OK: {target_filename}')
 
-                    with open(target_filename, "rb") as f:
-                        file_hash = hashlib.md5()
-                        while chunk := f.read(8192):
-                            file_hash.update(chunk)
+                target_entry = FileEntry(path=str(target_filename))
+                hex_digest = target_entry.calculate_checksum(algorithm='md5')
 
-                    hex_digest = file_hash.hexdigest()
-
-                    if hex_digest != md5sum:
-                        logger.error(f'Target checksum ERROR! Removing: {target_filename}')
-                        shutil.rmtree(target_filename)
-                        continue
-                    logger.debug(f'Target checksum OK: {target_filename}')
+                if hex_digest != md5sum:
+                    logger.error(f'Target checksum ERROR! Removing: {target_filename}')
+                    shutil.rmtree(target_filename)
+                    continue
+                logger.debug(f'Target checksum OK: {target_filename}')
