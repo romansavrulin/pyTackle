@@ -31,6 +31,7 @@ from common.fs_attrs import (
     set_creation_time,                               # noqa: F401 — re-exported
     set_access_modify_time,                          # noqa: F401 — re-exported
 )
+from common.listing import write_listing
 from tackles.TackleFactory import TackleFactory
 
 logging.basicConfig(
@@ -336,103 +337,64 @@ def is_directory_entry(entry_type: Optional[str], resolved_path: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Listing generation helpers
+# Listing generation
 # ---------------------------------------------------------------------------
-
-def _get_creation_time(stat_result) -> float:
-    """Return the creation (birth) time from a stat result.
-
-    On macOS/Windows ``st_birthtime`` is available.  On Linux fall back to
-    ``st_ctime`` (metadata-change time — the closest available proxy).
-    """
-    try:
-        return stat_result.st_birthtime
-    except AttributeError:
-        return stat_result.st_ctime
-
-
-def _format_ts_utc(epoch: float) -> str:
-    """Format an epoch timestamp as ``MM/DD/YYYY HH:MM:SS`` in UTC."""
-    dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
-    return dt.strftime('%m/%d/%Y %H:%M:%S')
-
-
-def _entry_type_code(path: str) -> str:
-    """Return ``'D'`` for directory, ``'F'`` for file, ``'L'`` for symlink."""
-    if os.path.islink(path):
-        return 'L'
-    if os.path.isdir(path):
-        return 'D'
-    return 'F'
-
-
-def _type_code_to_filter(code: str) -> str:
-    """Map a listing type code (``D``/``F``/``L``) to a ``--types`` filter
-    char (``d``/``f``/``l``)."""
-    return code.lower()
-
 
 def generate_listing(
     base_dir: str,
     output_path: str,
     allowed_types: set,
 ) -> int:
-    """Walk *base_dir* and write a Format-3 CSV listing to *output_path*.
+    """Walk *base_dir* and write a canonical 9-column CSV listing to *output_path*.
+
+    Uses :meth:`FileEntry.from_fs_path` to read filesystem attributes and
+    :func:`common.listing.write_listing` to serialise the canonical format.
 
     Returns the number of entries written.
     """
-    count = 0
     base = os.path.normpath(base_dir)
 
-    with open(output_path, 'w', encoding='utf-8', newline='') as fh:
-        writer = csv.writer(fh)
+    def _collect_entries():
+        """Yield :class:`FileEntry` objects for every matching path."""
         for dirpath, dirnames, filenames in os.walk(base):
-            # Collect all entries in this directory level
-            entries: List[str] = []
+            # Collect all full paths in this directory level
+            paths: List[str] = []
             if 'd' in allowed_types:
-                entries.extend(
+                paths.extend(
                     os.path.join(dirpath, d) for d in dirnames
                 )
             if 'f' in allowed_types:
-                entries.extend(
+                paths.extend(
                     os.path.join(dirpath, f) for f in filenames
                     if not os.path.islink(os.path.join(dirpath, f))
                 )
             if 'l' in allowed_types:
                 # Symlinks among files
-                entries.extend(
+                paths.extend(
                     os.path.join(dirpath, f) for f in filenames
                     if os.path.islink(os.path.join(dirpath, f))
                 )
                 # Symlinks among dirs
-                entries.extend(
+                paths.extend(
                     os.path.join(dirpath, d) for d in dirnames
                     if os.path.islink(os.path.join(dirpath, d))
                 )
 
             # Also include the directory itself if it's the base
             if dirpath == base and 'd' in allowed_types:
-                entries.insert(0, dirpath)
+                paths.insert(0, dirpath)
 
-            for full_path in entries:
+            for full_path in paths:
                 try:
-                    st = os.lstat(full_path)
+                    fe = FileEntry.from_fs_path(full_path)
                 except OSError as exc:
                     logger.warning('Cannot stat %s: %s', full_path, exc)
                     continue
+                # Store relative path from base_dir
+                fe.path = os.path.relpath(full_path, base)
+                yield fe
 
-                creation = _format_ts_utc(_get_creation_time(st))
-                access = _format_ts_utc(st.st_atime)
-                modify = _format_ts_utc(st.st_mtime)
-                type_code = _entry_type_code(full_path)
-
-                # Relative path from base_dir
-                rel = os.path.relpath(full_path, base)
-
-                writer.writerow([creation, access, modify, type_code, rel])
-                count += 1
-
-    return count
+    return write_listing(output_path, _collect_entries())
 
 
 # ---------------------------------------------------------------------------

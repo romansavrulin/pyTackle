@@ -334,10 +334,23 @@ class TestSetCreationTimeAttrMap:
 
 
 class TestSetCreationTimeGeneration:
-    """Test listing generation."""
+    """Test listing generation (canonical 9-column CSV format)."""
+
+    # Canonical column indices from CANONICAL_MAP:
+    #   0=size, 1=creation, 2=access, 3=modify, 4=permissions,
+    #   5=uid, 6=gid, 7=checksum, 8=path
+    _COL_SIZE = 0
+    _COL_CREATION = 1
+    _COL_ACCESS = 2
+    _COL_MODIFY = 3
+    _COL_PERMISSIONS = 4
+    _COL_UID = 5
+    _COL_GID = 6
+    _COL_CHECKSUM = 7
+    _COL_PATH = 8
 
     def test_generate_listing(self, tmp_path):
-        """generate_listing() writes a Format-3 CSV with correct structure."""
+        """generate_listing() writes a canonical 9-column CSV with correct structure."""
         # Create a temp directory with a few files
         (tmp_path / 'file1.txt').write_text('hello', encoding='utf-8')
         (tmp_path / 'file2.txt').write_text('world', encoding='utf-8')
@@ -364,16 +377,31 @@ class TestSetCreationTimeGeneration:
         assert len(rows) >= 3
 
         for row in rows:
-            # Format 3: creation, access, modify, type_code, rel_path
-            assert len(row) == 5, f'Expected 5 columns, got {len(row)}: {row}'
-            # First 3 columns should be parseable timestamps
-            for i in range(3):
-                parse_timestamp_powershell(row[i])
-            # Column 3 is type code
-            assert row[3] in ('D', 'F', 'L')
+            # Canonical format: 9 columns
+            assert len(row) == 9, f'Expected 9 columns, got {len(row)}: {row}'
+
+            # Timestamp columns (1, 2, 3) should be ISO format
+            for i in (self._COL_CREATION, self._COL_ACCESS, self._COL_MODIFY):
+                if row[i]:
+                    datetime.fromisoformat(row[i])  # raises on bad format
+
+            # Size column (0) should be a non-negative integer
+            assert row[self._COL_SIZE].isdigit() or row[self._COL_SIZE] == ''
+
+            # Permissions column (4) should be present (e.g. "0o755")
+            if row[self._COL_PERMISSIONS]:
+                assert row[self._COL_PERMISSIONS].startswith('0o')
+
+            # uid/gid columns (5, 6) should be integers when present
+            for i in (self._COL_UID, self._COL_GID):
+                if row[i]:
+                    int(row[i])  # raises on bad format
+
+            # Path is the last column (index 8)
+            assert row[self._COL_PATH] != ''
 
         # Verify our files appear in the listing
-        rel_paths = [row[4] for row in rows]
+        rel_paths = [row[self._COL_PATH] for row in rows]
         assert 'file1.txt' in rel_paths
         assert 'file2.txt' in rel_paths
         assert os.path.join('subdir', 'file3.txt') in rel_paths
@@ -392,10 +420,15 @@ class TestSetCreationTimeGeneration:
             reader = csv.reader(fh)
             rows = list(reader)
 
-        type_codes = [row[3] for row in rows]
-        assert all(tc == 'F' for tc in type_codes), (
-            f'Expected only F types, got {type_codes}'
-        )
+        # All entries should be files — verify no directory paths appear
+        # (directories would show up as paths without file extensions or as '.')
+        rel_paths = [row[self._COL_PATH] for row in rows]
+        assert len(rows) > 0
+        for row in rows:
+            assert len(row) == 9, f'Expected 9 columns, got {len(row)}: {row}'
+            path = row[self._COL_PATH]
+            full = os.path.join(str(tmp_path), path)
+            assert os.path.isfile(full), f'Expected file, got directory: {path}'
 
     def test_generate_listing_dirs_only(self, tmp_path):
         """generate_listing() with types={'d'} excludes files."""
@@ -410,10 +443,13 @@ class TestSetCreationTimeGeneration:
             reader = csv.reader(fh)
             rows = list(reader)
 
-        type_codes = [row[3] for row in rows]
-        assert all(tc == 'D' for tc in type_codes), (
-            f'Expected only D types, got {type_codes}'
-        )
+        # All entries should be directories
+        assert len(rows) > 0
+        for row in rows:
+            assert len(row) == 9, f'Expected 9 columns, got {len(row)}: {row}'
+            path = row[self._COL_PATH]
+            full = os.path.join(str(tmp_path), path)
+            assert os.path.isdir(full), f'Expected directory, got file: {path}'
 
 
 # ===================================================================
