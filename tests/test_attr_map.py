@@ -21,16 +21,21 @@ from common.attr_map import (
 class TestConstants:
     """Verify the module-level constant tuples and dicts."""
 
-    def test_canonical_map_has_all_nine_attrs(self):
-        assert len(CANONICAL_MAP) == 9
+    def test_canonical_map_has_all_ten_attrs(self):
+        # All 10 attrs are now in CANONICAL_MAP including entry_type
+        assert len(CANONICAL_MAP) == 10
         for attr in VALID_ATTRS:
             assert attr in CANONICAL_MAP
 
-    def test_path_is_column_8(self):
-        assert CANONICAL_MAP["path"] == "8"
+    def test_path_is_column_9(self):
+        # path is now the last column (column 9)
+        assert CANONICAL_MAP["path"] == "9"
+
+    def test_entry_type_is_column_8(self):
+        assert CANONICAL_MAP["entry_type"] == "8"
 
     def test_core_attrs(self):
-        assert set(CORE_ATTRS) == {"path", "checksum", "size"}
+        assert set(CORE_ATTRS) == {"path", "checksum", "size", "entry_type"}
 
     def test_metadata_attrs(self):
         assert set(METADATA_ATTRS) == {
@@ -40,8 +45,9 @@ class TestConstants:
     def test_datetime_attrs(self):
         assert set(DATETIME_ATTRS) == {"creation", "access", "modify"}
 
-    def test_valid_attrs_has_nine(self):
-        assert len(VALID_ATTRS) == 9
+    def test_valid_attrs_has_ten(self):
+        # 9 original + entry_type
+        assert len(VALID_ATTRS) == 10
 
 
 # ------------------------------------------------------------------
@@ -59,10 +65,10 @@ class TestParseAttrMapValid:
         result = parse_attr_map("path:0, size:1, creation:2")
         assert result == {"path": "0", "size": "1", "creation": "2"}
 
-    def test_all_nine_attrs(self):
+    def test_all_ten_attrs(self):
         raw = ", ".join(f"{attr}:{idx}" for idx, attr in enumerate(VALID_ATTRS))
         result = parse_attr_map(raw)
-        assert len(result) == 9
+        assert len(result) == 10
         for idx, attr in enumerate(VALID_ATTRS):
             assert result[attr] == str(idx)
 

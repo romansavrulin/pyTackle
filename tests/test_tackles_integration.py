@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from common.FileEntry import FileEntry
+from common.FileEntry import FileEntry, parse_datetime
 
 from tackles.SetCreationTime import (
     FORMAT_LINUX,
@@ -32,8 +32,6 @@ from tackles.SetCreationTime import (
     normalize_path,
     parse_attr_map,
     parse_listing,
-    parse_timestamp_linux,
-    parse_timestamp_powershell,
     parse_types,
     resolve_selector,
     set_access_modify_time,
@@ -85,7 +83,11 @@ class TestSetCreationTimeParsing:
     # ---------------------------------------------------------------
 
     def test_parse_listing_linux_format(self, tmp_path):
-        """Parse a Linux-format CSV and verify FileEntry fields."""
+        """Parse a Linux-format CSV and verify FileEntry fields.
+
+        Note: FileEntry only has 3 datetime attributes (creation, access, modify),
+        so only 3 dates are extracted even though Linux format has 4 date columns.
+        """
         csv_file = tmp_path / 'listing_linux.csv'
         csv_file.write_text(
             '"2024-01-15 10:30:00.000000000 +0000",'
@@ -100,12 +102,14 @@ class TestSetCreationTimeParsing:
         entries = parse_listing(str(csv_file))
         assert len(entries) == 1
 
-        fe, entry_type, dates = entries[0]
+        fe, dates = entries[0]
         assert isinstance(fe, FileEntry)
-        assert len(dates) == 4
+        # FileEntry has 3 datetime attrs (creation, access, modify)
+        assert len(dates) == 3
         assert dates[0] == datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
         assert dates[1] == datetime(2024, 1, 10, 8, 0, 0, tzinfo=timezone.utc)
-        assert entry_type == 'f'
+        assert dates[2] == datetime(2024, 1, 12, 12, 0, 0, tzinfo=timezone.utc)
+        assert fe.entry_type == 'f'
         assert fe.path == './test.txt'
 
     # ---------------------------------------------------------------
@@ -124,13 +128,13 @@ class TestSetCreationTimeParsing:
         entries = parse_listing(str(csv_file))
         assert len(entries) == 1
 
-        fe, entry_type, dates = entries[0]
+        fe, dates = entries[0]
         assert isinstance(fe, FileEntry)
         assert len(dates) == 3
         assert dates[0] == datetime(2024, 1, 10, 8, 0, 0, tzinfo=timezone.utc)
         assert dates[1] == datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
         assert dates[2] == datetime(2024, 1, 12, 12, 0, 0, tzinfo=timezone.utc)
-        assert entry_type is None  # ps_header has no type column
+        assert fe.entry_type is None  # ps_header has no type column
         assert fe.path == 'C:\\test.txt'
 
     # ---------------------------------------------------------------
@@ -148,21 +152,21 @@ class TestSetCreationTimeParsing:
         entries = parse_listing(str(csv_file))
         assert len(entries) == 1
 
-        fe, entry_type, dates = entries[0]
+        fe, dates = entries[0]
         assert isinstance(fe, FileEntry)
         assert len(dates) == 3
         assert dates[0] == datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
-        assert entry_type == 'F'
+        assert fe.entry_type == 'F'
         assert fe.path == './test.txt'
 
     # ---------------------------------------------------------------
-    # parse_timestamp_linux
+    # parse_datetime (from FileEntry)
     # ---------------------------------------------------------------
 
-    def test_parse_timestamp_linux(self):
+    def test_parse_datetime_linux(self):
         """Valid Linux timestamp -> tz-aware datetime."""
         raw = '2020-08-20 06:15:03.491092220 +0000'
-        dt = parse_timestamp_linux(raw)
+        dt = parse_datetime(raw)
         assert dt.year == 2020
         assert dt.month == 8
         assert dt.day == 20
@@ -172,35 +176,31 @@ class TestSetCreationTimeParsing:
         assert dt.microsecond == 491092
         assert dt.tzinfo is not None
 
-    def test_parse_timestamp_linux_with_offset(self):
+    def test_parse_datetime_linux_with_offset(self):
         """Linux timestamp with non-zero tz offset."""
         raw = '2024-01-15 10:30:00.000000000 +0300'
-        dt = parse_timestamp_linux(raw)
+        dt = parse_datetime(raw)
         assert dt.year == 2024
         assert dt.month == 1
         assert dt.day == 15
         assert dt.hour == 10
         assert dt.minute == 30
 
-    def test_parse_timestamp_linux_invalid(self):
+    def test_parse_datetime_linux_invalid(self):
         """Invalid string raises ValueError."""
-        with pytest.raises(ValueError, match='Cannot parse Linux timestamp'):
-            parse_timestamp_linux('not-a-timestamp')
+        with pytest.raises(ValueError, match='Cannot parse datetime'):
+            parse_datetime('not-a-timestamp')
 
-    # ---------------------------------------------------------------
-    # parse_timestamp_powershell
-    # ---------------------------------------------------------------
-
-    def test_parse_timestamp_powershell(self):
+    def test_parse_datetime_powershell(self):
         """Valid PowerShell timestamp -> tz-aware UTC datetime."""
         raw = '02/24/2023 14:04:32'
-        dt = parse_timestamp_powershell(raw)
+        dt = parse_datetime(raw)
         assert dt == datetime(2023, 2, 24, 14, 4, 32, tzinfo=timezone.utc)
 
-    def test_parse_timestamp_powershell_invalid(self):
+    def test_parse_datetime_powershell_invalid(self):
         """Invalid string raises ValueError."""
         with pytest.raises(ValueError):
-            parse_timestamp_powershell('not-a-timestamp')
+            parse_datetime('not-a-timestamp')
 
     # ---------------------------------------------------------------
     # normalize_path
@@ -334,11 +334,11 @@ class TestSetCreationTimeAttrMap:
 
 
 class TestSetCreationTimeGeneration:
-    """Test listing generation (canonical 9-column CSV format)."""
+    """Test listing generation (canonical 10-column CSV format)."""
 
     # Canonical column indices from CANONICAL_MAP:
     #   0=size, 1=creation, 2=access, 3=modify, 4=permissions,
-    #   5=uid, 6=gid, 7=checksum, 8=path
+    #   5=uid, 6=gid, 7=checksum, 8=entry_type, 9=path
     _COL_SIZE = 0
     _COL_CREATION = 1
     _COL_ACCESS = 2
@@ -347,10 +347,11 @@ class TestSetCreationTimeGeneration:
     _COL_UID = 5
     _COL_GID = 6
     _COL_CHECKSUM = 7
-    _COL_PATH = 8
+    _COL_ENTRY_TYPE = 8
+    _COL_PATH = 9
 
     def test_generate_listing(self, tmp_path):
-        """generate_listing() writes a canonical 9-column CSV with correct structure."""
+        """generate_listing() writes a canonical 10-column CSV with correct structure."""
         # Create a temp directory with a few files
         (tmp_path / 'file1.txt').write_text('hello', encoding='utf-8')
         (tmp_path / 'file2.txt').write_text('world', encoding='utf-8')
@@ -377,8 +378,8 @@ class TestSetCreationTimeGeneration:
         assert len(rows) >= 3
 
         for row in rows:
-            # Canonical format: 9 columns
-            assert len(row) == 9, f'Expected 9 columns, got {len(row)}: {row}'
+            # Canonical format: 10 columns
+            assert len(row) == 10, f'Expected 10 columns, got {len(row)}: {row}'
 
             # Timestamp columns (1, 2, 3) should be ISO format
             for i in (self._COL_CREATION, self._COL_ACCESS, self._COL_MODIFY):
@@ -397,7 +398,12 @@ class TestSetCreationTimeGeneration:
                 if row[i]:
                     int(row[i])  # raises on bad format
 
-            # Path is the last column (index 8)
+            # entry_type column (8) should be 'f', 'd', or 'l'
+            if row[self._COL_ENTRY_TYPE]:
+                assert row[self._COL_ENTRY_TYPE] in ('f', 'd', 'l'), \
+                    f'Invalid entry_type: {row[self._COL_ENTRY_TYPE]}'
+
+            # Path is the last column (index 9)
             assert row[self._COL_PATH] != ''
 
         # Verify our files appear in the listing
@@ -425,7 +431,7 @@ class TestSetCreationTimeGeneration:
         rel_paths = [row[self._COL_PATH] for row in rows]
         assert len(rows) > 0
         for row in rows:
-            assert len(row) == 9, f'Expected 9 columns, got {len(row)}: {row}'
+            assert len(row) == 10, f'Expected 10 columns, got {len(row)}: {row}'
             path = row[self._COL_PATH]
             full = os.path.join(str(tmp_path), path)
             assert os.path.isfile(full), f'Expected file, got directory: {path}'
@@ -446,7 +452,7 @@ class TestSetCreationTimeGeneration:
         # All entries should be directories
         assert len(rows) > 0
         for row in rows:
-            assert len(row) == 9, f'Expected 9 columns, got {len(row)}: {row}'
+            assert len(row) == 10, f'Expected 10 columns, got {len(row)}: {row}'
             path = row[self._COL_PATH]
             full = os.path.join(str(tmp_path), path)
             assert os.path.isdir(full), f'Expected directory, got file: {path}'
@@ -486,7 +492,7 @@ class TestSetCreationTimeApply:
         entries = parse_listing(str(listing_csv))
         assert len(entries) == 1
 
-        fe, entry_type, dates = entries[0]
+        fe, dates = entries[0]
         rel_path = normalize_path(fe.path)
         resolved = os.path.normpath(os.path.join(str(tmp_path), rel_path))
 
@@ -537,7 +543,7 @@ class TestSetCreationTimeApply:
 
         # Simulate dry-run: resolve but do NOT apply
         dry_run = True
-        fe, entry_type, dates = entries[0]
+        fe, dates = entries[0]
         attr_map = parse_attr_map('access:1,modify:2')
 
         resolved_attrs = {}
@@ -581,13 +587,15 @@ class TestSetCreationTimeApply:
         all_types = parse_types('f,d,l')
         assert all_types == {'f', 'd', 'l'}
 
-        # classify_entry with file
-        assert classify_entry('f', str(test_file)) == 'f'
+        # classify_entry with FileEntry containing type
+        fe_file = FileEntry(path=str(test_file), entry_type='f')
+        assert classify_entry(fe_file, str(test_file)) == 'f'
         assert 'f' in files_only
         assert 'f' not in dirs_only
 
         # classify_entry with directory
-        assert classify_entry('d', str(test_dir)) == 'd'
+        fe_dir = FileEntry(path=str(test_dir), entry_type='d')
+        assert classify_entry(fe_dir, str(test_dir)) == 'd'
         assert 'd' in dirs_only
         assert 'd' not in files_only
 
@@ -608,8 +616,10 @@ class TestSetCreationTimeApply:
         test_dir = tmp_path / 'nomarkerdir'
         test_dir.mkdir()
 
-        assert classify_entry(None, str(test_file)) == 'f'
-        assert classify_entry(None, str(test_dir)) == 'd'
+        fe_file = FileEntry(path=str(test_file), entry_type=None)
+        fe_dir = FileEntry(path=str(test_dir), entry_type=None)
+        assert classify_entry(fe_file, str(test_file)) == 'f'
+        assert classify_entry(fe_dir, str(test_dir)) == 'd'
 
     def test_classify_entry_directory_variants(self, tmp_path):
         """classify_entry recognises 'directory' and 'D' as directory types."""
@@ -617,7 +627,8 @@ class TestSetCreationTimeApply:
         test_dir.mkdir()
 
         for marker in ('directory', 'Directory', 'DIRECTORY', 'D', 'd'):
-            assert classify_entry(marker, str(test_dir)) == 'd', (
+            fe = FileEntry(path=str(test_dir), entry_type=marker)
+            assert classify_entry(fe, str(test_dir)) == 'd', (
                 f'Expected "d" for entry_type={marker!r}'
             )
 

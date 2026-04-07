@@ -45,6 +45,15 @@ def _stat_creation_time(st: os.stat_result) -> datetime:
     return datetime.fromtimestamp(ts, tz=timezone.utc)
 
 
+def _detect_entry_type(path: str, st: os.stat_result) -> str:
+    """Detect entry type from filesystem: 'f', 'd', or 'l'."""
+    if stat.S_ISLNK(st.st_mode):
+        return 'l'
+    if stat.S_ISDIR(st.st_mode):
+        return 'd'
+    return 'f'
+
+
 def read_all(path: str) -> dict:
     """Read all available filesystem attributes from *path*.
 
@@ -61,6 +70,7 @@ def read_all(path: str) -> dict:
         'permissions': oct(stat.S_IMODE(st.st_mode)),
         'uid': st.st_uid,
         'gid': st.st_gid,
+        'entry_type': _detect_entry_type(path, st),
     }
 
 

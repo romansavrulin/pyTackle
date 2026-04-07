@@ -1,7 +1,7 @@
 """Attr-map parsing, column mapping constants, and meta-selectors.
 
 Generalises the ``--attr-map`` parsing originally found in
-:pymod:`tackles.SetCreationTime` to support all nine canonical
+:pymod:`tackles.SetCreationTime` to support all ten canonical
 :class:`~common.FileEntry.FileEntry` attributes.
 """
 
@@ -14,11 +14,11 @@ from __future__ import annotations
 # All valid attribute names for FileEntry
 VALID_ATTRS: tuple[str, ...] = (
     'path', 'size', 'creation', 'access', 'modify',
-    'permissions', 'uid', 'gid', 'checksum',
+    'permissions', 'uid', 'gid', 'checksum', 'entry_type',
 )
 
 # Core attributes — define file identity, not copyable by default
-CORE_ATTRS: tuple[str, ...] = ('path', 'checksum', 'size')
+CORE_ATTRS: tuple[str, ...] = ('path', 'checksum', 'size', 'entry_type')
 
 # Metadata attributes — transferable between entries
 METADATA_ATTRS: tuple[str, ...] = (
@@ -37,7 +37,7 @@ META_SELECTORS: tuple[str, ...] = ('earliest', 'latest')
 _SELECTOR_ALIASES: dict[str, str] = {'e': 'earliest', 'l': 'latest'}
 
 # ---------------------------------------------------------------------------
-# Canonical column mapping (path LAST — column 8)
+# Canonical column mapping (10 columns, path LAST — column 9)
 # ---------------------------------------------------------------------------
 
 CANONICAL_MAP: dict[str, str] = {
@@ -49,7 +49,8 @@ CANONICAL_MAP: dict[str, str] = {
     'uid': '5',
     'gid': '6',
     'checksum': '7',
-    'path': '8',
+    'entry_type': '8',
+    'path': '9',
 }
 
 

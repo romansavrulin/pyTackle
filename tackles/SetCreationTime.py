@@ -21,11 +21,11 @@ import logging
 import os
 import pathlib
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from common.attr_map import parse_attr_map          # noqa: F401 — re-exported
-from common.FileEntry import FileEntry, parse_datetime
+from common.FileEntry import FileEntry
 from common.fs_attrs import (
     set_creation_time,                               # noqa: F401 — re-exported
     set_access_modify_time,                          # noqa: F401 — re-exported
@@ -46,33 +46,10 @@ FORMAT_LINUX = 'linux'          # Format 1: 6 cols, no header
 FORMAT_PS_HEADER = 'ps_header'  # Format 2: 4 cols, header row
 FORMAT_PS_TYPE = 'ps_type'      # Format 3: 5 cols, no header, type marker
 
-
-# ---------------------------------------------------------------------------
-# Timestamp parsing — thin wrappers around FileEntry.parse_datetime()
-# ---------------------------------------------------------------------------
-
-def parse_timestamp_linux(raw: str) -> datetime:
-    """Parse ``2020-08-20 06:15:03.491092220 +0000`` into a tz-aware datetime.
-
-    Delegates to :func:`common.FileEntry.parse_datetime`.
-    Raises :exc:`ValueError` if the string cannot be parsed.
-    """
-    try:
-        return parse_datetime(raw)
-    except ValueError:
-        raise ValueError(f'Cannot parse Linux timestamp: {raw!r}')
-
-
-def parse_timestamp_powershell(raw: str) -> datetime:
-    """Parse ``02/24/2023 14:04:32`` as UTC datetime.
-
-    Delegates to :func:`common.FileEntry.parse_datetime`.
-    Raises :exc:`ValueError` if the string cannot be parsed.
-    """
-    try:
-        return parse_datetime(raw)
-    except ValueError:
-        raise ValueError(f'Cannot parse PowerShell timestamp: {raw!r}')
+# Format-specific attribute maps for FileEntry.from_listing_row()
+_ATTR_MAP_LINUX = {'creation': '0', 'access': '1', 'modify': '2', 'entry_type': '4', 'path': '5'}
+_ATTR_MAP_PS_HEADER = {'creation': '0', 'access': '1', 'modify': '2', 'path': '3'}
+_ATTR_MAP_PS_TYPE = {'creation': '0', 'access': '1', 'modify': '2', 'entry_type': '3', 'path': '4'}
 
 
 # ---------------------------------------------------------------------------
@@ -142,68 +119,37 @@ def detect_format(first_line: str) -> str:
     )
 
 
-def _parse_row_linux(cols: List[str]) -> Tuple[FileEntry, Optional[str], List[datetime]]:
+def _extract_dates(fe: FileEntry) -> List[datetime]:
+    """Extract non-None datetime attributes from a FileEntry in canonical order."""
+    dates: List[datetime] = []
+    for attr in ('creation', 'access', 'modify'):
+        dt = getattr(fe, attr)
+        if dt is not None:
+            dates.append(dt)
+    return dates
+
+
+def _parse_row_linux(cols: List[str]) -> Tuple[FileEntry, List[datetime]]:
     """Format 1: 6 columns — 4 dates, type, path."""
-    dates: List[datetime] = []
-    for i in range(4):
-        try:
-            dates.append(parse_timestamp_linux(cols[i]))
-        except (ValueError, IndexError):
-            pass
-    entry_type = cols[4].strip().lower() if len(cols) > 4 else None
-    raw_path = cols[5].strip().strip('"') if len(cols) > 5 else ''
-
-    fe = FileEntry(
-        path=raw_path,
-        creation=dates[0] if len(dates) > 0 else None,
-        access=dates[1] if len(dates) > 1 else None,
-        modify=dates[2] if len(dates) > 2 else None,
-    )
-    return fe, entry_type, dates
+    fe = FileEntry.from_listing_row(cols, _ATTR_MAP_LINUX)
+    return fe, _extract_dates(fe)
 
 
-def _parse_row_ps_header(cols: List[str]) -> Tuple[FileEntry, Optional[str], List[datetime]]:
+def _parse_row_ps_header(cols: List[str]) -> Tuple[FileEntry, List[datetime]]:
     """Format 2: 4 columns — 3 dates, path (no type)."""
-    dates: List[datetime] = []
-    for i in range(3):
-        try:
-            dates.append(parse_timestamp_powershell(cols[i]))
-        except (ValueError, IndexError):
-            pass
-    raw_path = cols[3].strip().strip('"') if len(cols) > 3 else ''
-
-    fe = FileEntry(
-        path=raw_path,
-        creation=dates[0] if len(dates) > 0 else None,
-        access=dates[1] if len(dates) > 1 else None,
-        modify=dates[2] if len(dates) > 2 else None,
-    )
-    return fe, None, dates
+    fe = FileEntry.from_listing_row(cols, _ATTR_MAP_PS_HEADER)
+    return fe, _extract_dates(fe)
 
 
-def _parse_row_ps_type(cols: List[str]) -> Tuple[FileEntry, Optional[str], List[datetime]]:
+def _parse_row_ps_type(cols: List[str]) -> Tuple[FileEntry, List[datetime]]:
     """Format 3: 5 columns — 3 dates, type, path."""
-    dates: List[datetime] = []
-    for i in range(3):
-        try:
-            dates.append(parse_timestamp_powershell(cols[i]))
-        except (ValueError, IndexError):
-            pass
-    entry_type = cols[3].strip().upper() if len(cols) > 3 else None
-    raw_path = cols[4].strip().strip('"') if len(cols) > 4 else ''
-
-    fe = FileEntry(
-        path=raw_path,
-        creation=dates[0] if len(dates) > 0 else None,
-        access=dates[1] if len(dates) > 1 else None,
-        modify=dates[2] if len(dates) > 2 else None,
-    )
-    return fe, entry_type, dates
+    fe = FileEntry.from_listing_row(cols, _ATTR_MAP_PS_TYPE)
+    return fe, _extract_dates(fe)
 
 
-def parse_listing(listing_path: str) -> List[Tuple[FileEntry, Optional[str], List[datetime]]]:
+def parse_listing(listing_path: str) -> List[Tuple[FileEntry, List[datetime]]]:
     """Read and parse a listing file, auto-detecting the format."""
-    entries: List[Tuple[FileEntry, Optional[str], List[datetime]]] = []
+    entries: List[Tuple[FileEntry, List[datetime]]] = []
 
     with open(listing_path, encoding='utf-8-sig', newline='') as fh:
         first_line = fh.readline()
@@ -302,19 +248,43 @@ def resolve_selector(
 # Entry-type classification
 # ---------------------------------------------------------------------------
 
-def classify_entry(entry_type: Optional[str], resolved_path: str) -> str:
+def normalize_entry_type(raw: Optional[str]) -> Optional[str]:
+    """Normalize entry type to single-char code: 'f', 'd', or 'l'.
+
+    Accepts various formats from listing files:
+    - 'f', 'F', 'file' → 'f'
+    - 'd', 'D', 'directory' → 'd'
+    - 'l', 'L', 'symlink', 'link' → 'l'
+    """
+    if raw is None:
+        return None
+    raw = raw.strip().lower()
+    if raw in ('f', 'file'):
+        return 'f'
+    if raw in ('d', 'directory'):
+        return 'd'
+    if raw in ('l', 'symlink', 'link'):
+        return 'l'
+    # Unknown format — return as-is (single char) or first char
+    return raw[0] if raw else None
+
+
+def classify_entry(fe: FileEntry, resolved_path: str) -> str:
     """Return a single-char type code: ``'d'``, ``'f'``, or ``'l'``.
 
-    Symlinks are detected via the filesystem.  If the listing carries a type
+    Symlinks are detected via the filesystem.  If the FileEntry carries a type
     marker it is used for the file-vs-directory distinction; otherwise the
     filesystem is consulted.
     """
     # Symlinks must be checked first (a symlink to a dir is still a symlink)
     if os.path.islink(resolved_path):
         return 'l'
-    if entry_type is not None:
-        if entry_type.lower() in ('directory', 'd'):
+    if fe.entry_type is not None:
+        normalized = normalize_entry_type(fe.entry_type)
+        if normalized == 'd':
             return 'd'
+        if normalized == 'l':
+            return 'l'
         return 'f'
     # No type column — fall back to filesystem
     if os.path.isdir(resolved_path):
@@ -322,12 +292,12 @@ def classify_entry(entry_type: Optional[str], resolved_path: str) -> str:
     return 'f'
 
 
-def is_directory_entry(entry_type: Optional[str], resolved_path: str) -> bool:
+def is_directory_entry(fe: FileEntry, resolved_path: str) -> bool:
     """Decide whether *entry* represents a directory.
 
     Kept for backward compatibility with ``--date-column`` legacy mode.
     """
-    return classify_entry(entry_type, resolved_path) == 'd'
+    return classify_entry(fe, resolved_path) == 'd'
 
 
 # ---------------------------------------------------------------------------
@@ -564,13 +534,13 @@ class SetCreationTime(TackleFactory):
         logger.info('Parsed %d entries from listing', len(entries))
         self._do_attr_map(entries)
 
-    def _do_attr_map(self, entries: List[Tuple[FileEntry, Optional[str], List[datetime]]]) -> None:
+    def _do_attr_map(self, entries: List[Tuple[FileEntry, List[datetime]]]) -> None:
         """Apply timestamps according to ``--attr-map``."""
         success = 0
         skipped = 0
         failed = 0
 
-        for fe, entry_type, dates in entries:
+        for fe, dates in entries:
             rel_path = normalize_path(fe.path, self.script_base_path)
             resolved = os.path.normpath(os.path.join(self.base_dir, rel_path))
 
@@ -580,7 +550,7 @@ class SetCreationTime(TackleFactory):
                 continue
 
             # Type filter
-            etype = classify_entry(entry_type, resolved)
+            etype = classify_entry(fe, resolved)
             if etype not in self.allowed_types:
                 logger.debug(
                     'Skipping %s (type=%s, allowed=%s)',

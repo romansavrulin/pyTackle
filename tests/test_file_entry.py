@@ -53,7 +53,8 @@ class TestFromListingRow:
             "1000",                # 5: uid
             "1000",                # 6: gid
             "md5:abcdef1234567890",  # 7: checksum
-            "/tmp/test.txt",       # 8: path
+            "f",                   # 8: entry_type
+            "/tmp/test.txt",       # 9: path
         ]
         entry = FileEntry.from_listing_row(cols, CANONICAL_MAP)
         assert entry.path == "/tmp/test.txt"
@@ -63,6 +64,7 @@ class TestFromListingRow:
         assert entry.uid == 1000
         assert entry.gid == 1000
         assert entry.checksum == "md5:abcdef1234567890"
+        assert entry.entry_type == "f"
 
     def test_partial_attr_map(self):
         cols = ["/tmp/test.txt", "512"]
@@ -281,16 +283,18 @@ class TestToListingRow:
         entry = FileEntry(
             path="/tmp/test.txt", size=1024, creation=now, access=now,
             modify=now, permissions="0o644", uid=1000, gid=1000,
-            checksum="md5:abc",
+            checksum="md5:abc", entry_type="f",
         )
         row = entry.to_listing_row(CANONICAL_MAP)
-        assert len(row) == 9
-        assert row[8] == "/tmp/test.txt"  # path is last
+        assert len(row) == 10
+        assert row[8] == "f"  # entry_type
+        assert row[9] == "/tmp/test.txt"  # path is last
 
     def test_path_in_last_position(self):
-        entry = FileEntry(path="/tmp/test.txt")
+        entry = FileEntry(path="/tmp/test.txt", entry_type="f")
         row = entry.to_listing_row(CANONICAL_MAP)
-        assert row[8] == "/tmp/test.txt"
+        assert row[9] == "/tmp/test.txt"
+        assert row[8] == "f"
 
 
 # ------------------------------------------------------------------
@@ -511,3 +515,68 @@ class TestParseDatetime:
         assert entry.creation is not None
         assert entry.creation == datetime(2023, 2, 24, 14, 4, 32, tzinfo=timezone.utc)
         assert entry.creation.tzinfo is not None
+
+
+# ------------------------------------------------------------------
+# entry_type attribute
+# ------------------------------------------------------------------
+
+class TestEntryType:
+    """Tests for the entry_type attribute on FileEntry."""
+
+    def test_entry_type_defaults_to_none(self):
+        """FileEntry.entry_type defaults to None."""
+        entry = FileEntry(path="/tmp/test.txt")
+        assert entry.entry_type is None
+
+    def test_entry_type_set_via_constructor(self):
+        """entry_type can be set via the constructor."""
+        entry = FileEntry(path="/tmp/test.txt", entry_type='f')
+        assert entry.entry_type == 'f'
+
+    def test_from_fs_path_populates_entry_type_file(self, tmp_file):
+        """from_fs_path sets entry_type='f' for regular files."""
+        entry = FileEntry.from_fs_path(tmp_file)
+        assert entry.entry_type == 'f'
+
+    def test_from_fs_path_populates_entry_type_directory(self, tmp_path):
+        """from_fs_path sets entry_type='d' for directories."""
+        entry = FileEntry.from_fs_path(str(tmp_path))
+        assert entry.entry_type == 'd'
+
+    def test_from_fs_path_populates_entry_type_symlink(self, tmp_path):
+        """from_fs_path sets entry_type='l' for symlinks."""
+        target = tmp_path / 'target.txt'
+        target.write_text('target content', encoding='utf-8')
+        link = tmp_path / 'link.txt'
+        link.symlink_to(target)
+
+        entry = FileEntry.from_fs_path(str(link))
+        assert entry.entry_type == 'l'
+
+    def test_from_listing_row_with_entry_type(self):
+        """from_listing_row can parse entry_type from a column."""
+        attr_map = {
+            'path': '0',
+            'entry_type': '1',
+        }
+        cols = ['./myfile.txt', 'f']
+        entry = FileEntry.from_listing_row(cols, attr_map)
+        assert entry.entry_type == 'f'
+        assert entry.path == './myfile.txt'
+
+    def test_from_listing_row_entry_type_directory(self):
+        """from_listing_row parses directory entry_type."""
+        attr_map = {
+            'path': '0',
+            'entry_type': '1',
+        }
+        cols = ['./mydir', 'd']
+        entry = FileEntry.from_listing_row(cols, attr_map)
+        assert entry.entry_type == 'd'
+
+    def test_entry_type_not_applied_to_fs(self, tmp_file):
+        """entry_type is skipped during apply_to_fs (non-applicable)."""
+        entry = FileEntry(path=tmp_file, entry_type='f')
+        # Should not raise — entry_type is in _NON_FS_ATTRS
+        entry.apply_to_fs(['entry_type'])

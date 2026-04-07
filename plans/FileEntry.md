@@ -55,10 +55,12 @@ A header-less CSV where each column has a well-known position. Unknown/missing v
 | 5      | `uid`        | Integer                                               | `1000`                               |
 | 6      | `gid`        | Integer                                               | `1000`                               |
 | 7      | `checksum`   | `algorithm:hexdigest`                                 | `md5:d41d8cd98f00b204e9800998ecf8427e` |
-| 8      | `path`       | Relative path, quoted if needed                       | `photos/2020/img.jpg`                |
+| 8      | `entry_type` | Single char: `f` (file), `d` (dir), `l` (symlink)    | `f`                                  |
+| 9      | `path`       | Relative path, quoted if needed                       | `photos/2020/img.jpg`                |
 
 **Design rationale:**
-- **Path is last** (column 8) — paths may contain commas, quotes, or other special characters; placing them last simplifies parsing and visual inspection of the fixed-width metadata columns
+- **Path is last** (column 9) — paths may contain commas, quotes, or other special characters; placing them last simplifies parsing and visual inspection of the fixed-width metadata columns
+- `entry_type` precedes path so filtering by type is efficient without parsing the full path
 - ISO 8601 timestamps are unambiguous, sortable, and include timezone
 - Checksum includes algorithm prefix for future extensibility (sha256, etc.)
 - Empty string = attribute not known/not applicable
@@ -66,7 +68,7 @@ A header-less CSV where each column has a well-known position. Unknown/missing v
 ### Default attr-map for canonical format
 
 ```
-size:0, creation:1, access:2, modify:3, permissions:4, uid:5, gid:6, checksum:7, path:8
+size:0, creation:1, access:2, modify:3, permissions:4, uid:5, gid:6, checksum:7, entry_type:8, path:9
 ```
 
 When reading non-canonical CSVs (e.g. the existing SetCreationTime formats), the user provides a custom `--attr-map` that maps only the columns that exist.
@@ -90,7 +92,7 @@ Attributes are classified into two categories:
 
 | Category | Attributes | Description |
 |----------|-----------|-------------|
-| **Core** | `path`, `checksum`, `size` | Define the identity of a specific file — these uniquely identify the exact file content and location |
+| **Core** | `path`, `checksum`, `size`, `entry_type` | Define the identity of a specific file — these uniquely identify the exact file content and location |
 | **Metadata** | `creation`, `access`, `modify`, `permissions`, `uid`, `gid` | Describe properties of the file that can be transferred between entries |
 
 This distinction matters for the `copy_attrs_from()` method: by default it copies only **metadata** attributes, never core attributes. Core attributes define *which* file this is; metadata describes *how* it is stored.
@@ -111,6 +113,7 @@ classDiagram
         +Optional~int~ uid
         +Optional~int~ gid
         +Optional~str~ checksum
+        +Optional~str~ entry_type
         +from_listing_row(cols, attr_map) FileEntry$
         +from_md5sum_line(line) FileEntry$
         +from_fs_path(path) FileEntry$
@@ -187,12 +190,12 @@ class FileEntry:
 
 ```python
 # Core attributes — define file identity, not copyable by default
-CORE_ATTRS = ('path', 'checksum', 'size')
+CORE_ATTRS = ('path', 'checksum', 'size', 'entry_type')
 
 # Metadata attributes — transferable between entries
 METADATA_ATTRS = ('creation', 'access', 'modify', 'permissions', 'uid', 'gid')
 
-# All attributes
+# All attributes (10 total)
 ALL_ATTRS = CORE_ATTRS + METADATA_ATTRS
 ```
 

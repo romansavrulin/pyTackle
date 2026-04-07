@@ -26,7 +26,7 @@ class TestReadAll:
     def test_all_expected_keys_present(self, tmp_file):
         attrs = read_all(tmp_file)
         expected_keys = {"size", "creation", "access", "modify",
-                         "permissions", "uid", "gid"}
+                         "permissions", "uid", "gid", "entry_type"}
         assert set(attrs.keys()) == expected_keys
 
     def test_types_are_correct(self, tmp_file):

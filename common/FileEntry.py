@@ -35,13 +35,20 @@ _INT_ATTRS: frozenset[str] = frozenset(('size', 'uid', 'gid'))
 _DATETIME_ATTRS: frozenset[str] = frozenset(DATETIME_ATTRS)
 
 # Attributes that are plain strings
-_STR_ATTRS: frozenset[str] = frozenset(('path', 'permissions', 'checksum'))
+_STR_ATTRS: frozenset[str] = frozenset(('path', 'permissions', 'checksum', 'entry_type'))
 
 # Attributes that are not applicable to filesystem writes — silently skipped
-_NON_FS_ATTRS: frozenset[str] = frozenset(('path', 'size', 'checksum'))
+_NON_FS_ATTRS: frozenset[str] = frozenset(('path', 'size', 'checksum', 'entry_type'))
 
 # Timestamp attribute names (for grouping in apply_to_fs)
 _TIMESTAMP_ATTRS: frozenset[str] = frozenset(('creation', 'access', 'modify'))
+
+
+# Valid entry type codes
+ENTRY_TYPE_FILE = 'f'
+ENTRY_TYPE_DIR = 'd'
+ENTRY_TYPE_SYMLINK = 'l'
+VALID_ENTRY_TYPES: frozenset[str] = frozenset((ENTRY_TYPE_FILE, ENTRY_TYPE_DIR, ENTRY_TYPE_SYMLINK))
 
 
 @dataclass
@@ -60,6 +67,7 @@ class FileEntry:
     uid: Optional[int] = None
     gid: Optional[int] = None
     checksum: Optional[str] = None      # "algorithm:hexdigest"
+    entry_type: Optional[str] = None    # 'f' (file), 'd' (directory), 'l' (symlink)
 
     # ------------------------------------------------------------------
     # Factory methods
