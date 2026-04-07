@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from common.FileEntry import FileEntry
+from common.FileEntry import FileEntry, parse_datetime
 from common.attr_map import CANONICAL_MAP, CORE_ATTRS, METADATA_ATTRS
 
 
@@ -345,3 +345,169 @@ class TestApplyToFs:
         # Should not raise — we only apply access/modify/permissions
         # (creation requires platform-specific support)
         entry.apply_to_fs(attrs=["access", "modify", "permissions"])
+
+
+# ------------------------------------------------------------------
+# parse_datetime — multi-format datetime parser
+# ------------------------------------------------------------------
+
+class TestParseDatetime:
+    """Tests for the module-level parse_datetime() function."""
+
+    # ---------------------------------------------------------------
+    # ISO 8601 format
+    # ---------------------------------------------------------------
+
+    def test_iso_naive(self):
+        """Standard ISO 8601 without timezone -> naive datetime."""
+        dt = parse_datetime("2024-06-15T12:00:00")
+        assert dt == datetime(2024, 6, 15, 12, 0, 0)
+        assert dt.tzinfo is None
+
+    def test_iso_utc(self):
+        """ISO 8601 with +00:00 -> tz-aware UTC datetime."""
+        dt = parse_datetime("2024-06-15T12:00:00+00:00")
+        assert dt == datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        assert dt.tzinfo is not None
+
+    def test_iso_with_microseconds(self):
+        """ISO 8601 with microseconds."""
+        dt = parse_datetime("2024-06-15T12:00:00.123456+00:00")
+        assert dt.microsecond == 123456
+
+    # ---------------------------------------------------------------
+    # Linux stat-style format
+    # ---------------------------------------------------------------
+
+    def test_linux_stat_basic(self):
+        """Linux stat-style: 2020-08-20 06:15:03.491092220 +0000."""
+        dt = parse_datetime("2020-08-20 06:15:03.491092220 +0000")
+        assert dt.year == 2020
+        assert dt.month == 8
+        assert dt.day == 20
+        assert dt.hour == 6
+        assert dt.minute == 15
+        assert dt.second == 3
+        assert dt.microsecond == 491092  # nanoseconds truncated
+        assert dt.tzinfo is not None
+
+    def test_linux_stat_tz_aware(self):
+        """Linux stat-style produces tz-aware datetime."""
+        dt = parse_datetime("2020-08-20 06:15:03.491092220 +0000")
+        assert dt.tzinfo is not None
+        # UTC offset should be zero
+        assert dt.utcoffset() == timedelta(0)
+
+    def test_linux_stat_positive_offset(self):
+        """Linux stat-style with +0300 offset."""
+        dt = parse_datetime("2024-01-15 10:30:00.000000000 +0300")
+        assert dt.year == 2024
+        assert dt.month == 1
+        assert dt.day == 15
+        assert dt.hour == 10
+        assert dt.minute == 30
+        assert dt.utcoffset() == timedelta(hours=3)
+
+    def test_linux_stat_negative_offset(self):
+        """Linux stat-style with -0500 offset."""
+        dt = parse_datetime("2023-12-25 08:00:00.123456789 -0500")
+        assert dt.hour == 8
+        assert dt.microsecond == 123456  # truncated from 123456789
+        assert dt.utcoffset() == timedelta(hours=-5)
+
+    def test_linux_stat_short_fractional(self):
+        """Linux stat-style with fewer than 6 fractional digits."""
+        dt = parse_datetime("2024-01-01 00:00:00.123 +0000")
+        assert dt.microsecond == 123000  # padded to 6 digits
+
+    def test_linux_stat_zero_fractional(self):
+        """Linux stat-style with all-zero nanoseconds."""
+        dt = parse_datetime("2024-01-15 10:30:00.000000000 +0000")
+        assert dt.microsecond == 0
+        assert dt.tzinfo is not None
+
+    # ---------------------------------------------------------------
+    # PowerShell-style format
+    # ---------------------------------------------------------------
+
+    def test_powershell_basic(self):
+        """PowerShell-style: 02/24/2023 14:04:32 -> UTC datetime."""
+        dt = parse_datetime("02/24/2023 14:04:32")
+        assert dt == datetime(2023, 2, 24, 14, 4, 32, tzinfo=timezone.utc)
+
+    def test_powershell_is_utc(self):
+        """PowerShell-style always produces UTC tz-aware datetime."""
+        dt = parse_datetime("01/01/2024 00:00:00")
+        assert dt.tzinfo is not None
+        assert dt.utcoffset() == timedelta(0)
+
+    def test_powershell_midnight(self):
+        """PowerShell-style at midnight."""
+        dt = parse_datetime("12/31/2023 00:00:00")
+        assert dt == datetime(2023, 12, 31, 0, 0, 0, tzinfo=timezone.utc)
+
+    def test_powershell_end_of_day(self):
+        """PowerShell-style at 23:59:59."""
+        dt = parse_datetime("06/15/2024 23:59:59")
+        assert dt == datetime(2024, 6, 15, 23, 59, 59, tzinfo=timezone.utc)
+
+    # ---------------------------------------------------------------
+    # Invalid inputs
+    # ---------------------------------------------------------------
+
+    def test_invalid_string_raises(self):
+        """Completely invalid string raises ValueError."""
+        with pytest.raises(ValueError, match="Cannot parse datetime"):
+            parse_datetime("not-a-timestamp")
+
+    def test_empty_string_raises(self):
+        """Empty string raises ValueError."""
+        with pytest.raises(ValueError):
+            parse_datetime("")
+
+    def test_partial_date_raises(self):
+        """Partial date string raises ValueError."""
+        with pytest.raises(ValueError):
+            parse_datetime("2024-01")
+
+    # ---------------------------------------------------------------
+    # from_listing_row with non-ISO datetime formats
+    # ---------------------------------------------------------------
+
+    def test_from_listing_row_linux_timestamp(self):
+        """from_listing_row parses Linux stat-style timestamps via _parse_value."""
+        cols = [
+            "1024",                                        # 0: size
+            "2020-08-20 06:15:03.491092220 +0000",         # 1: creation
+            "2020-08-20 06:15:03.491092220 +0000",         # 2: access
+            "2020-08-20 06:15:03.491092220 +0000",         # 3: modify
+            "0o644",                                       # 4: permissions
+            "1000",                                        # 5: uid
+            "1000",                                        # 6: gid
+            "md5:abcdef1234567890",                        # 7: checksum
+            "/tmp/test.txt",                               # 8: path
+        ]
+        entry = FileEntry.from_listing_row(cols, CANONICAL_MAP)
+        assert entry.creation is not None
+        assert entry.creation.year == 2020
+        assert entry.creation.month == 8
+        assert entry.creation.microsecond == 491092
+        assert entry.creation.tzinfo is not None
+
+    def test_from_listing_row_powershell_timestamp(self):
+        """from_listing_row parses PowerShell-style timestamps via _parse_value."""
+        cols = [
+            "512",                                         # 0: size
+            "02/24/2023 14:04:32",                         # 1: creation
+            "02/24/2023 14:04:32",                         # 2: access
+            "02/24/2023 14:04:32",                         # 3: modify
+            "0o755",                                       # 4: permissions
+            "0",                                           # 5: uid
+            "0",                                           # 6: gid
+            "",                                            # 7: checksum
+            "/tmp/ps_test.txt",                            # 8: path
+        ]
+        entry = FileEntry.from_listing_row(cols, CANONICAL_MAP)
+        assert entry.creation is not None
+        assert entry.creation == datetime(2023, 2, 24, 14, 4, 32, tzinfo=timezone.utc)
+        assert entry.creation.tzinfo is not None

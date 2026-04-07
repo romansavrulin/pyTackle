@@ -20,13 +20,12 @@ import io
 import logging
 import os
 import pathlib
-import re
 import sys
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from common.attr_map import parse_attr_map          # noqa: F401 — re-exported
-from common.FileEntry import FileEntry
+from common.FileEntry import FileEntry, parse_datetime
 from common.fs_attrs import (
     set_creation_time,                               # noqa: F401 — re-exported
     set_access_modify_time,                          # noqa: F401 — re-exported
@@ -47,38 +46,33 @@ FORMAT_LINUX = 'linux'          # Format 1: 6 cols, no header
 FORMAT_PS_HEADER = 'ps_header'  # Format 2: 4 cols, header row
 FORMAT_PS_TYPE = 'ps_type'      # Format 3: 5 cols, no header, type marker
 
-# Regex for Linux-style timestamps: 2020-08-20 06:15:03.491092220 +0000
-_RE_LINUX_TS = re.compile(
-    r'(\d{4}-\d{2}-\d{2})\s+'
-    r'(\d{2}:\d{2}:\d{2})'
-    r'\.(\d+)\s+'
-    r'([+-]\d{4})'
-)
-
 
 # ---------------------------------------------------------------------------
-# Timestamp parsing
+# Timestamp parsing — thin wrappers around FileEntry.parse_datetime()
 # ---------------------------------------------------------------------------
 
 def parse_timestamp_linux(raw: str) -> datetime:
-    """Parse ``2020-08-20 06:15:03.491092220 +0000`` into a tz-aware datetime."""
-    raw = raw.strip()
-    m = _RE_LINUX_TS.match(raw)
-    if not m:
+    """Parse ``2020-08-20 06:15:03.491092220 +0000`` into a tz-aware datetime.
+
+    Delegates to :func:`common.FileEntry.parse_datetime`.
+    Raises :exc:`ValueError` if the string cannot be parsed.
+    """
+    try:
+        return parse_datetime(raw)
+    except ValueError:
         raise ValueError(f'Cannot parse Linux timestamp: {raw!r}')
-    date_part, time_part, frac, tz_offset = m.groups()
-    # Truncate nanoseconds to microseconds (max 6 digits)
-    micro = frac[:6].ljust(6, '0')
-    # Build ISO string that strptime can handle
-    iso = f'{date_part} {time_part}.{micro} {tz_offset}'
-    return datetime.strptime(iso, '%Y-%m-%d %H:%M:%S.%f %z')
 
 
 def parse_timestamp_powershell(raw: str) -> datetime:
-    """Parse ``02/24/2023 14:04:32`` as UTC datetime."""
-    raw = raw.strip()
-    dt = datetime.strptime(raw, '%m/%d/%Y %H:%M:%S')
-    return dt.replace(tzinfo=timezone.utc)
+    """Parse ``02/24/2023 14:04:32`` as UTC datetime.
+
+    Delegates to :func:`common.FileEntry.parse_datetime`.
+    Raises :exc:`ValueError` if the string cannot be parsed.
+    """
+    try:
+        return parse_datetime(raw)
+    except ValueError:
+        raise ValueError(f'Cannot parse PowerShell timestamp: {raw!r}')
 
 
 # ---------------------------------------------------------------------------

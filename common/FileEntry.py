@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from common.attr_map import (
@@ -374,12 +374,72 @@ class FileEntry:
 # Module-level helpers
 # ----------------------------------------------------------------------
 
+# Regex for Linux-style timestamps: 2020-08-20 06:15:03.491092220 +0000
+_RE_LINUX_TS = re.compile(
+    r'(\d{4}-\d{2}-\d{2})\s+'
+    r'(\d{2}:\d{2}:\d{2})'
+    r'\.(\d+)\s+'
+    r'([+-]\d{4})'
+)
+
+# Regex for PowerShell-style timestamps: 02/24/2023 14:04:32
+_RE_POWERSHELL_TS = re.compile(
+    r'\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2}'
+)
+
+
+def parse_datetime(raw: str) -> datetime:
+    """Parse a datetime string using a fallback chain of formats.
+
+    Supported formats (tried in order):
+
+    1. **ISO 8601** — ``2024-06-15T12:00:00+00:00`` or any string accepted
+       by :meth:`datetime.fromisoformat`.
+    2. **Linux stat-style** — ``2020-08-20 06:15:03.491092220 +0000``.
+       Nanosecond fractional seconds are truncated to microseconds (6 digits).
+       The ``+HHMM`` timezone offset produces a tz-aware datetime.
+    3. **PowerShell-style** — ``02/24/2023 14:04:32`` (``MM/DD/YYYY HH:MM:SS``).
+       Parsed as **UTC** (tz-aware).
+
+    Returns a :class:`datetime` object.  Raises :exc:`ValueError` if none of
+    the formats match.
+    """
+    raw = raw.strip()
+
+    # --- Attempt 1: ISO 8601 ---
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        pass
+
+    # --- Attempt 2: Linux stat-style with nanoseconds + tz offset ---
+    m = _RE_LINUX_TS.match(raw)
+    if m:
+        date_part, time_part, frac, tz_offset = m.groups()
+        # Truncate nanoseconds to microseconds (max 6 digits)
+        micro = frac[:6].ljust(6, '0')
+        iso = f'{date_part} {time_part}.{micro} {tz_offset}'
+        return datetime.strptime(iso, '%Y-%m-%d %H:%M:%S.%f %z')
+
+    # --- Attempt 3: PowerShell-style MM/DD/YYYY HH:MM:SS (assumed UTC) ---
+    if _RE_POWERSHELL_TS.match(raw):
+        dt = datetime.strptime(raw, '%m/%d/%Y %H:%M:%S')
+        return dt.replace(tzinfo=timezone.utc)
+
+    raise ValueError(
+        f'Cannot parse datetime: {raw!r}. '
+        f'Expected ISO 8601, Linux stat-style '
+        f'(YYYY-MM-DD HH:MM:SS.nnnnnnnnn +HHMM), '
+        f'or PowerShell-style (MM/DD/YYYY HH:MM:SS).'
+    )
+
+
 def _parse_value(attr: str, raw: str) -> Any:
     """Parse a raw string *raw* into the appropriate Python type for *attr*."""
     if attr in _INT_ATTRS:
         return int(raw)
     if attr in _DATETIME_ATTRS:
-        return datetime.fromisoformat(raw)
+        return parse_datetime(raw)
     # str attrs: path, permissions, checksum
     return raw
 
