@@ -2,12 +2,13 @@
 
 Provides factory methods for construction from CSV listing rows, md5sum lines,
 and filesystem paths, plus instance methods for attribute access, copying,
-filesystem application, and checksum calculation.
+filesystem application, checksum calculation, and validation.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -82,40 +83,32 @@ class FileEntry:
         """Create a :class:`FileEntry` from a CSV row and an attr-map.
 
         *cols* is a list of string column values.  *attr_map* maps attribute
-        names to selectors — either a 0-based column index (as a string) or
-        a meta-selector (``'earliest'`` / ``'latest'``) for datetime attrs.
+        names to column indices (as strings, e.g. ``'0'``, ``'1'``).
+
+        Meta-selectors like ``'earliest'`` or ``'latest'`` are **not**
+        supported here — use tackle-specific logic for date selection.
+
+        Raises :exc:`ValueError` if a selector is not a valid column index
+        or if ``'path'`` is not in *attr_map*.
         """
         kwargs: dict[str, Any] = {}
 
-        # First pass: resolve all column-index selectors so we can collect
-        # datetime values for meta-selectors.
-        resolved_datetimes: dict[str, datetime] = {}
-
         for attr, selector in attr_map.items():
-            if selector.isdigit():
-                idx = int(selector)
-                raw = cols[idx] if idx < len(cols) else ''
-                raw = raw.strip()
-                if not raw:
-                    kwargs[attr] = None
-                    continue
-                kwargs[attr] = _parse_value(attr, raw)
-                # Track resolved datetimes for meta-selectors
-                if attr in _DATETIME_ATTRS and kwargs[attr] is not None:
-                    resolved_datetimes[attr] = kwargs[attr]
+            if not selector.isdigit():
+                raise ValueError(
+                    f"Selector for {attr!r} must be a column index (digit), "
+                    f"got {selector!r}. Meta-selectors like 'earliest'/'latest' "
+                    f"are not supported in from_listing_row()."
+                )
+            idx = int(selector)
+            raw = cols[idx] if idx < len(cols) else ''
+            raw = raw.strip()
+            if not raw:
+                kwargs[attr] = None
+                continue
+            kwargs[attr] = _parse_value(attr, raw)
 
-        # Second pass: resolve meta-selectors (earliest / latest)
-        for attr, selector in attr_map.items():
-            if selector in ('earliest', 'latest'):
-                if not resolved_datetimes:
-                    kwargs[attr] = None
-                    continue
-                if selector == 'earliest':
-                    kwargs[attr] = min(resolved_datetimes.values())
-                else:
-                    kwargs[attr] = max(resolved_datetimes.values())
-
-        # 'path' is required — fall back to empty string if missing
+        # 'path' is required
         if 'path' not in kwargs:
             raise ValueError(
                 "attr_map must include 'path' to construct a FileEntry"
@@ -291,6 +284,96 @@ class FileEntry:
                 "Applying ownership uid=%s gid=%s to %s", uid, gid, self.path
             )
             fs_attrs.apply_ownership(self.path, uid, gid)
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    def validate(
+        self,
+        attrs: list[str] | None = None,
+        check_fs: bool = False,
+    ) -> list[str]:
+        """Validate this entry against the filesystem.
+
+        Args:
+            attrs: Attributes to validate. If ``None``, only checks path
+                existence.
+            check_fs: If ``True``, compare attribute values against the actual
+                filesystem. If ``False``, only check that *attrs* are not
+                ``None`` in this entry.
+
+        Returns:
+            A list of validation error strings. An empty list means the entry
+            is valid.
+
+        Examples::
+
+            # Check path exists
+            errors = fe.validate()
+
+            # Check path exists and timestamps are set
+            errors = fe.validate(['creation', 'modify'])
+
+            # Verify timestamps match filesystem
+            errors = fe.validate(['creation', 'modify'], check_fs=True)
+
+            # Verify checksum matches file content
+            errors = fe.validate(['checksum'], check_fs=True)
+        """
+        errors: list[str] = []
+
+        # Check path existence
+        if not os.path.exists(self.path):
+            errors.append(f"path does not exist: {self.path}")
+            return errors  # Cannot check further without the file
+
+        if not attrs:
+            return errors
+
+        if check_fs:
+            # Compare against actual filesystem values
+            try:
+                fs_entry = FileEntry.from_fs_path(self.path)
+            except OSError as exc:
+                errors.append(f"cannot read filesystem attributes: {exc}")
+                return errors
+
+            for attr in attrs:
+                my_val = getattr(self, attr, None)
+
+                if my_val is None:
+                    errors.append(f"{attr}: not set in entry")
+                    continue
+
+                if attr == 'checksum':
+                    # Checksum needs special handling — calculate on demand
+                    if ':' in my_val:
+                        algo, expected = my_val.split(':', 1)
+                    else:
+                        algo, expected = 'md5', my_val
+                    try:
+                        fs_digest = fs_entry.calculate_checksum(algorithm=algo)
+                        if fs_digest != expected:
+                            errors.append(
+                                f"checksum mismatch: expected {expected}, "
+                                f"got {fs_digest}"
+                            )
+                    except OSError as exc:
+                        errors.append(f"checksum calculation failed: {exc}")
+                else:
+                    fs_val = getattr(fs_entry, attr, None)
+                    if my_val != fs_val:
+                        errors.append(
+                            f"{attr} mismatch: entry={my_val!r}, fs={fs_val!r}"
+                        )
+        else:
+            # Just check that attrs are not None
+            for attr in attrs:
+                if getattr(self, attr, None) is None:
+                    errors.append(f"{attr}: not set in entry")
+
+        return errors
 
     # ------------------------------------------------------------------
     # Checksum

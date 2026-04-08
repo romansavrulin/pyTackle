@@ -22,7 +22,7 @@ import os
 import pathlib
 import sys
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from common.attr_map import parse_attr_map          # noqa: F401 — re-exported
 from common.FileEntry import FileEntry
@@ -120,7 +120,10 @@ def detect_format(first_line: str) -> str:
 
 
 def _extract_dates(fe: FileEntry) -> List[datetime]:
-    """Extract non-None datetime attributes from a FileEntry in canonical order."""
+    """Extract non-None datetime attributes from a FileEntry in canonical order.
+    
+    Used for date selection logic (earliest/latest/index).
+    """
     dates: List[datetime] = []
     for attr in ('creation', 'access', 'modify'):
         dt = getattr(fe, attr)
@@ -129,27 +132,32 @@ def _extract_dates(fe: FileEntry) -> List[datetime]:
     return dates
 
 
-def _parse_row_linux(cols: List[str]) -> Tuple[FileEntry, List[datetime]]:
+def _parse_row_linux(cols: List[str]) -> FileEntry:
     """Format 1: 6 columns — 4 dates, type, path."""
-    fe = FileEntry.from_listing_row(cols, _ATTR_MAP_LINUX)
-    return fe, _extract_dates(fe)
+    return FileEntry.from_listing_row(cols, _ATTR_MAP_LINUX)
 
 
-def _parse_row_ps_header(cols: List[str]) -> Tuple[FileEntry, List[datetime]]:
+def _parse_row_ps_header(cols: List[str]) -> FileEntry:
     """Format 2: 4 columns — 3 dates, path (no type)."""
-    fe = FileEntry.from_listing_row(cols, _ATTR_MAP_PS_HEADER)
-    return fe, _extract_dates(fe)
+    return FileEntry.from_listing_row(cols, _ATTR_MAP_PS_HEADER)
 
 
-def _parse_row_ps_type(cols: List[str]) -> Tuple[FileEntry, List[datetime]]:
+def _parse_row_ps_type(cols: List[str]) -> FileEntry:
     """Format 3: 5 columns — 3 dates, type, path."""
-    fe = FileEntry.from_listing_row(cols, _ATTR_MAP_PS_TYPE)
-    return fe, _extract_dates(fe)
+    return FileEntry.from_listing_row(cols, _ATTR_MAP_PS_TYPE)
 
 
-def parse_listing(listing_path: str) -> List[Tuple[FileEntry, List[datetime]]]:
-    """Read and parse a listing file, auto-detecting the format."""
-    entries: List[Tuple[FileEntry, List[datetime]]] = []
+def parse_listing(
+    listing_path: str,
+    base_dir: str,
+    script_base_path: Optional[str] = None,
+) -> List[FileEntry]:
+    """Read and parse a listing file, resolving paths against *base_dir*.
+
+    Each FileEntry's ``path`` attribute is set to the fully-resolved filesystem
+    path.  Entries with non-existent paths are logged and skipped.
+    """
+    entries: List[FileEntry] = []
 
     with open(listing_path, encoding='utf-8-sig', newline='') as fh:
         first_line = fh.readline()
@@ -184,8 +192,14 @@ def parse_listing(listing_path: str) -> List[Tuple[FileEntry, List[datetime]]]:
             if not cols or all(c.strip() == '' for c in cols):
                 continue
             try:
-                entry = row_parser(cols)
-                entries.append(entry)
+                fe = row_parser(cols)
+                
+                # Resolve path to full filesystem path
+                rel_path = normalize_path(fe.path, script_base_path)
+                full_path = os.path.normpath(os.path.join(base_dir, rel_path))
+                fe.path = full_path
+                
+                entries.append(fe)
             except Exception as exc:
                 logger.warning('Line %d: skipping — %s', lineno, exc)
 
@@ -529,49 +543,60 @@ class SetCreationTime(TackleFactory):
             )
             return
 
-        # Apply mode
-        entries = parse_listing(self.listing_path)
+        # Apply mode — parse listing with path resolution
+        entries = parse_listing(
+            self.listing_path,
+            self.base_dir,
+            self.script_base_path,
+        )
         logger.info('Parsed %d entries from listing', len(entries))
         self._do_attr_map(entries)
 
-    def _do_attr_map(self, entries: List[Tuple[FileEntry, List[datetime]]]) -> None:
+    def _do_attr_map(self, entries: List[FileEntry]) -> None:
         """Apply timestamps according to ``--attr-map``."""
         success = 0
         skipped = 0
         failed = 0
 
-        for fe, dates in entries:
-            rel_path = normalize_path(fe.path, self.script_base_path)
-            resolved = os.path.normpath(os.path.join(self.base_dir, rel_path))
+        # Source attributes needed for date selection
+        source_attrs = ['creation', 'access', 'modify']
 
-            if not os.path.exists(resolved):
-                logger.error('Path not found locally, skipping: %s', resolved)
+        for fe in entries:
+            # Validate: path exists and has required source data
+            errors = fe.validate(source_attrs)
+            if errors:
+                for err in errors:
+                    logger.error('%s: %s', fe.path, err)
                 failed += 1
                 continue
 
-            # Type filter
-            etype = classify_entry(fe, resolved)
+            # Type filter (path is already resolved in fe.path)
+            etype = classify_entry(fe, fe.path)
             if etype not in self.allowed_types:
                 logger.debug(
                     'Skipping %s (type=%s, allowed=%s)',
-                    rel_path, etype, self.allowed_types,
+                    fe.path, etype, self.allowed_types,
                 )
                 skipped += 1
                 continue
 
-            # Resolve dates for each requested attribute
-            resolved_attrs: Dict[str, datetime] = {}
+            # Extract dates for selection logic
+            dates = _extract_dates(fe)
+
+            # Apply user's selection and mutate FileEntry
+            attrs_to_apply: List[str] = []
             skip_entry = False
             for attr, selector in self.attr_map.items():
                 dt = resolve_selector(dates, selector)
                 if dt is None:
                     logger.warning(
                         'No valid date for attr=%s selector=%s on %s, skipping entry',
-                        attr, selector, rel_path,
+                        attr, selector, fe.path,
                     )
                     skip_entry = True
                     break
-                resolved_attrs[attr] = dt
+                setattr(fe, attr, dt)
+                attrs_to_apply.append(attr)
 
             if skip_entry:
                 skipped += 1
@@ -579,44 +604,31 @@ class SetCreationTime(TackleFactory):
 
             if self.dry_run:
                 parts = ', '.join(
-                    f'{a}={d.isoformat()}' for a, d in resolved_attrs.items()
+                    f'{a}={getattr(fe, a).isoformat()}' for a in attrs_to_apply
                 )
-                logger.info('[DRY-RUN] Would set %s on %s', parts, resolved)
+                logger.info('[DRY-RUN] Would set %s on %s', parts, fe.path)
                 success += 1
                 continue
 
-            # Apply timestamps
+            # Apply timestamps using FileEntry.apply_to_fs()
             try:
-                self._apply_attrs(resolved, resolved_attrs)
+                fe.apply_to_fs(attrs=attrs_to_apply)
                 parts = ', '.join(
-                    f'{a}={d.isoformat()}' for a, d in resolved_attrs.items()
+                    f'{a}={getattr(fe, a).isoformat()}' for a in attrs_to_apply
                 )
-                logger.info('Set %s on %s', parts, resolved)
+                logger.info('Set %s on %s', parts, fe.path)
                 success += 1
             except NotImplementedError as exc:
-                logger.warning('%s — skipping %s', exc, resolved)
+                logger.warning('%s — skipping %s', exc, fe.path)
                 skipped += 1
             except OSError as exc:
-                logger.error('Failed for %s: %s', resolved, exc)
+                logger.error('Failed for %s: %s', fe.path, exc)
                 failed += 1
             except Exception as exc:
-                logger.error('Unexpected error for %s: %s', resolved, exc)
+                logger.error('Unexpected error for %s: %s', fe.path, exc)
                 failed += 1
 
         logger.info(
             'Done. success=%d  skipped=%d  failed=%d',
             success, skipped, failed,
         )
-
-    @staticmethod
-    def _apply_attrs(
-        path: str, attrs: Dict[str, datetime],
-    ) -> None:
-        """Apply resolved attribute datetimes to *path*."""
-        if 'creation' in attrs:
-            set_creation_time(path, attrs['creation'])
-
-        access_dt = attrs.get('access')
-        modify_dt = attrs.get('modify')
-        if access_dt is not None or modify_dt is not None:
-            set_access_modify_time(path, access_dt, modify_dt)

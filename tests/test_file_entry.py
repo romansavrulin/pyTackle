@@ -80,7 +80,8 @@ class TestFromListingRow:
         assert entry.gid is None
         assert entry.checksum is None
 
-    def test_meta_selector_earliest(self):
+    def test_meta_selector_earliest_raises(self):
+        """Meta-selectors are not supported in from_listing_row — they raise ValueError."""
         dt1 = datetime(2020, 1, 1, tzinfo=timezone.utc)
         dt2 = datetime(2021, 6, 15, tzinfo=timezone.utc)
         dt3 = datetime(2019, 3, 10, tzinfo=timezone.utc)
@@ -93,14 +94,14 @@ class TestFromListingRow:
         attr_map = {
             "path": "0",
             "creation": "1",
-            "access": "earliest",
+            "access": "earliest",  # Meta-selector — should raise
             "modify": "3",
         }
-        entry = FileEntry.from_listing_row(cols, attr_map)
-        # earliest should be min of creation (dt1) and modify (dt3) = dt3
-        assert entry.access == dt3
+        with pytest.raises(ValueError, match="Meta-selectors.*not supported"):
+            FileEntry.from_listing_row(cols, attr_map)
 
-    def test_meta_selector_latest(self):
+    def test_meta_selector_latest_raises(self):
+        """Meta-selectors are not supported in from_listing_row — they raise ValueError."""
         dt1 = datetime(2020, 1, 1, tzinfo=timezone.utc)
         dt2 = datetime(2021, 6, 15, tzinfo=timezone.utc)
         cols = [
@@ -112,11 +113,10 @@ class TestFromListingRow:
             "path": "0",
             "creation": "1",
             "modify": "2",
-            "access": "latest",
+            "access": "latest",  # Meta-selector — should raise
         }
-        entry = FileEntry.from_listing_row(cols, attr_map)
-        # latest should be max of creation (dt1) and modify (dt2) = dt2
-        assert entry.access == dt2
+        with pytest.raises(ValueError, match="Meta-selectors.*not supported"):
+            FileEntry.from_listing_row(cols, attr_map)
 
 
 # ------------------------------------------------------------------

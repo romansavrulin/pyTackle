@@ -26,6 +26,7 @@ from tackles.SetCreationTime import (
     FORMAT_LINUX,
     FORMAT_PS_HEADER,
     FORMAT_PS_TYPE,
+    _extract_dates,
     classify_entry,
     detect_format,
     generate_listing,
@@ -99,18 +100,20 @@ class TestSetCreationTimeParsing:
             encoding='utf-8',
         )
 
-        entries = parse_listing(str(csv_file))
+        entries = parse_listing(str(csv_file), str(tmp_path))
         assert len(entries) == 1
 
-        fe, dates = entries[0]
+        fe = entries[0]
         assert isinstance(fe, FileEntry)
         # FileEntry has 3 datetime attrs (creation, access, modify)
+        dates = _extract_dates(fe)
         assert len(dates) == 3
         assert dates[0] == datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
         assert dates[1] == datetime(2024, 1, 10, 8, 0, 0, tzinfo=timezone.utc)
         assert dates[2] == datetime(2024, 1, 12, 12, 0, 0, tzinfo=timezone.utc)
         assert fe.entry_type == 'f'
-        assert fe.path == './test.txt'
+        # Path is now resolved to full path
+        assert fe.path == os.path.normpath(os.path.join(str(tmp_path), 'test.txt'))
 
     # ---------------------------------------------------------------
     # parse_listing — PowerShell header format
@@ -121,21 +124,23 @@ class TestSetCreationTimeParsing:
         csv_file = tmp_path / 'listing_ps_header.csv'
         csv_file.write_text(
             'CreationTimeUtc,LastAccessTimeUtc,LastWriteTimeUtc,FullName\n'
-            '01/10/2024 08:00:00,01/15/2024 10:30:00,01/12/2024 12:00:00,C:\\test.txt\n',
+            '01/10/2024 08:00:00,01/15/2024 10:30:00,01/12/2024 12:00:00,test.txt\n',
             encoding='utf-8',
         )
 
-        entries = parse_listing(str(csv_file))
+        entries = parse_listing(str(csv_file), str(tmp_path))
         assert len(entries) == 1
 
-        fe, dates = entries[0]
+        fe = entries[0]
         assert isinstance(fe, FileEntry)
+        dates = _extract_dates(fe)
         assert len(dates) == 3
         assert dates[0] == datetime(2024, 1, 10, 8, 0, 0, tzinfo=timezone.utc)
         assert dates[1] == datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
         assert dates[2] == datetime(2024, 1, 12, 12, 0, 0, tzinfo=timezone.utc)
         assert fe.entry_type is None  # ps_header has no type column
-        assert fe.path == 'C:\\test.txt'
+        # Path is now resolved to full path
+        assert fe.path == os.path.normpath(os.path.join(str(tmp_path), 'test.txt'))
 
     # ---------------------------------------------------------------
     # parse_listing — PowerShell type format
@@ -149,15 +154,17 @@ class TestSetCreationTimeParsing:
             encoding='utf-8',
         )
 
-        entries = parse_listing(str(csv_file))
+        entries = parse_listing(str(csv_file), str(tmp_path))
         assert len(entries) == 1
 
-        fe, dates = entries[0]
+        fe = entries[0]
         assert isinstance(fe, FileEntry)
+        dates = _extract_dates(fe)
         assert len(dates) == 3
         assert dates[0] == datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
         assert fe.entry_type == 'F'
-        assert fe.path == './test.txt'
+        # Path is now resolved to full path
+        assert fe.path == os.path.normpath(os.path.join(str(tmp_path), 'test.txt'))
 
     # ---------------------------------------------------------------
     # parse_datetime (from FileEntry)
@@ -488,13 +495,14 @@ class TestSetCreationTimeApply:
             encoding='utf-8',
         )
 
-        # Parse the listing
-        entries = parse_listing(str(listing_csv))
+        # Parse the listing (now includes base_dir for path resolution)
+        entries = parse_listing(str(listing_csv), str(tmp_path))
         assert len(entries) == 1
 
-        fe, dates = entries[0]
-        rel_path = normalize_path(fe.path)
-        resolved = os.path.normpath(os.path.join(str(tmp_path), rel_path))
+        fe = entries[0]
+        dates = _extract_dates(fe)
+        # Path is already resolved to full path
+        resolved = fe.path
 
         # Apply access and modify timestamps
         access_dt = resolve_selector(dates, '1')  # access column
@@ -538,12 +546,13 @@ class TestSetCreationTimeApply:
             encoding='utf-8',
         )
 
-        entries = parse_listing(str(listing_csv))
+        entries = parse_listing(str(listing_csv), str(tmp_path))
         assert len(entries) == 1
 
         # Simulate dry-run: resolve but do NOT apply
         dry_run = True
-        fe, dates = entries[0]
+        fe = entries[0]
+        dates = _extract_dates(fe)
         attr_map = parse_attr_map('access:1,modify:2')
 
         resolved_attrs = {}
