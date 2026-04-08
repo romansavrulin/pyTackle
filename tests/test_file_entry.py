@@ -679,3 +679,77 @@ class TestNormalizeEntryType:
         cols = ['./mylink', 'symlink']
         fe = FileEntry.from_listing_row(cols, attr_map)
         assert fe.entry_type == 'l'
+
+
+# ------------------------------------------------------------------
+# validate — filesystem validation
+# ------------------------------------------------------------------
+
+class TestValidate:
+    """Tests for the validate() method."""
+
+    def test_validate_path_exists(self, tmp_file):
+        """validate() returns no errors when path exists."""
+        entry = FileEntry(path=tmp_file)
+        errors = entry.validate()
+        assert errors == []
+
+    def test_validate_path_not_exists(self, tmp_path):
+        """validate() returns error when path does not exist."""
+        entry = FileEntry(path=str(tmp_path / "nonexistent.txt"))
+        errors = entry.validate()
+        assert len(errors) == 1
+        assert "does not exist" in errors[0]
+
+    def test_validate_skips_empty_checksum(self, tmp_file):
+        """validate(check_fs=True) skips empty checksum — no error reported."""
+        # Simulate a listing entry without checksum
+        entry = FileEntry(path=tmp_file, checksum=None)
+        errors = entry.validate(['checksum'], check_fs=True)
+        # Should return no errors — empty checksum is skipped, not validated
+        assert errors == []
+
+    def test_validate_skips_empty_string_checksum(self, tmp_file):
+        """validate(check_fs=True) skips empty string checksum."""
+        entry = FileEntry(path=tmp_file)
+        # Manually set empty string (edge case)
+        object.__setattr__(entry, 'checksum', '')
+        errors = entry.validate(['checksum'], check_fs=True)
+        assert errors == []
+
+    def test_validate_skips_empty_timestamps(self, tmp_file):
+        """validate(check_fs=True) skips None timestamps."""
+        entry = FileEntry(path=tmp_file, creation=None, modify=None)
+        errors = entry.validate(['creation', 'modify'], check_fs=True)
+        # Should return no errors — empty timestamps are skipped
+        assert errors == []
+
+    def test_validate_checksum_matches(self, tmp_file):
+        """validate(check_fs=True) succeeds when checksum matches."""
+        import hashlib
+        expected = hashlib.md5(b"Hello, FileEntry!\n").hexdigest()
+        entry = FileEntry(path=tmp_file, checksum=f"md5:{expected}")
+        errors = entry.validate(['checksum'], check_fs=True)
+        assert errors == []
+
+    def test_validate_checksum_mismatch(self, tmp_file):
+        """validate(check_fs=True) reports checksum mismatch."""
+        entry = FileEntry(path=tmp_file, checksum="md5:0000000000000000")
+        errors = entry.validate(['checksum'], check_fs=True)
+        assert len(errors) == 1
+        assert "checksum mismatch" in errors[0]
+
+    def test_validate_timestamp_matches(self, tmp_file):
+        """validate(check_fs=True) succeeds when timestamp matches."""
+        fs_entry = FileEntry.from_fs_path(tmp_file)
+        entry = FileEntry(path=tmp_file, modify=fs_entry.modify)
+        errors = entry.validate(['modify'], check_fs=True)
+        assert errors == []
+
+    def test_validate_check_fs_false_reports_none(self, tmp_file):
+        """validate(check_fs=False) reports error for None attributes."""
+        entry = FileEntry(path=tmp_file, checksum=None)
+        errors = entry.validate(['checksum'], check_fs=False)
+        # check_fs=False mode checks that attrs are SET, so None is an error
+        assert len(errors) == 1
+        assert "not set in entry" in errors[0]

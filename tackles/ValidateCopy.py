@@ -148,13 +148,21 @@ def parse_listing(
     listing_path: str,
     base_dir: str,
     script_base_path: Optional[str] = None,
+    progress_interval: int = 1000,
 ) -> List[FileEntry]:
     """Read and parse a listing file, resolving paths against *base_dir*.
 
     Each FileEntry's ``path`` attribute is set to the fully-resolved filesystem
     path.  Entries with non-existent paths are logged and skipped.
+    
+    Progress is logged every *progress_interval* entries.
     """
     entries: List[FileEntry] = []
+
+    # First pass: count total lines for progress reporting
+    with open(listing_path, encoding='utf-8-sig') as fh:
+        total_lines = sum(1 for line in fh if line.strip())
+    logger.info('Loading listing: %s (%d lines)', listing_path, total_lines)
 
     with open(listing_path, encoding='utf-8-sig', newline='') as fh:
         first_line = fh.readline()
@@ -173,6 +181,7 @@ def parse_listing(
         }[fmt]
 
         reader = csv.reader(fh)
+        processed = 0
         for lineno, cols in enumerate(reader, start=1):
             if not cols or all(c.strip() == '' for c in cols):
                 continue
@@ -185,9 +194,19 @@ def parse_listing(
                 fe.path = full_path
                 
                 entries.append(fe)
+                processed += 1
+                
+                # Progress logging
+                if processed % progress_interval == 0:
+                    pct = (processed / total_lines) * 100
+                    logger.info(
+                        'Loading entries: %d/%d (%.1f%%)',
+                        processed, total_lines, pct
+                    )
             except Exception as exc:
                 logger.warning('Line %d: skipping — %s', lineno, exc)
 
+    logger.info('Loaded %d entries from listing', len(entries))
     return entries
 
 
@@ -327,49 +346,54 @@ class ValidateCopy(TackleFactory):
 
     @classmethod
     def arg_parser(cls, subparser):
-        subparser.add_argument(
-            '--listing',
+        # =====================================================================
+        # MODE SELECTION (mutually exclusive)
+        # =====================================================================
+        mode_group = subparser.add_mutually_exclusive_group(required=True)
+
+        mode_group.add_argument(
+            '--validate',
             type=pathlib.Path,
             default=None,
-            help=(
-                'Path to the CSV listing file.  Required unless '
-                '--generate-listing is used.'
-            ),
+            metavar='LISTING',
+            help='Validate filesystem against listing file',
         )
-        subparser.add_argument(
-            '--base-dir',
-            type=pathlib.Path,
-            required=True,
-            help='Local base directory to resolve relative paths against',
-        )
-        subparser.add_argument(
-            '--generate-listing',
+        mode_group.add_argument(
+            '--generate',
             type=pathlib.Path,
             default=None,
-            help=(
-                'Generate a Format-3 CSV listing of --base-dir and write it '
-                'to the given path.  The listing contains creation, access, '
-                'and modification timestamps with relative paths.  '
-                'Respects --types for filtering.  '
-                'When this option is used, --listing is not required and '
-                'no timestamps are applied.'
-            ),
+            metavar='LISTING',
+            help='Generate listing from filesystem to output file',
         )
+        mode_group.add_argument(
+            '--apply',
+            type=pathlib.Path,
+            default=None,
+            metavar='LISTING',
+            help='Apply metadata from listing to filesystem',
+        )
+
+        # Unified attribute specification
         subparser.add_argument(
-            '--attr-map',
+            '--attrs',
             type=str,
-            default='',
+            default=None,
             help=(
-                'Comma-separated mapping of filesystem attributes to listing '
-                'column selectors.  Format: "attr:selector[,attr:selector,…]". '
-                'Attributes: creation, access, modify.  '
-                'Selectors: a 0-based column index, or "earliest" / "latest" '
-                '(short: "e" / "l") to pick the min/max date from the row.  '
-                'Default: empty — in apply mode, uses canonical mapping '
-                '(creation→col0, access→col1, modify→col2); in generate-listing '
-                'mode, attr-map is not used.  '
-                'Example: --attr-map="creation:1,access:2,modify:e"'
+                'Comma-separated attributes. Behavior depends on mode:\n'
+                '  validate: attributes to compare (default: all)\n'
+                '  generate: attributes to include (default: all + checksum)\n'
+                '  apply: attributes to set (default: creation,access,modify)'
             ),
+        )
+
+        # =====================================================================
+        # COMMON OPTIONS
+        # =====================================================================
+        # Positional argument for base directory
+        subparser.add_argument(
+            'base_dir',
+            type=pathlib.Path,
+            help='Local base directory to resolve relative paths against',
         )
         subparser.add_argument(
             '--types',
@@ -388,7 +412,7 @@ class ValidateCopy(TackleFactory):
             default=None,
             help=(
                 'Leading directory prefix to strip from paths in the listing '
-                'before resolving against --base-dir.  For example, if the '
+                'before resolving against base_dir.  For example, if the '
                 'listing contains "server/share/photos/2020" and you pass '
                 '--script-base-path "server/share", the resolved relative '
                 'path becomes "photos/2020".'
@@ -406,10 +430,10 @@ class ValidateCopy(TackleFactory):
             help='Verbose output',
         )
         subparser.add_argument(
-            '--checksum',
+            '-q', '--quiet',
             action='store_true',
             default=False,
-            help='Calculate checksums during listing generation (only for files)',
+            help='In validation mode, omit OK entries from output',
         )
         subparser.add_argument(
             '--checksum-algorithm',
@@ -417,54 +441,39 @@ class ValidateCopy(TackleFactory):
             default='md5',
             help='Algorithm for checksum calculation (default: md5)',
         )
+
+        # Advanced option for apply mode (still useful for selector logic)
         subparser.add_argument(
-            '--validate',
-            action='store_true',
-            default=False,
-            help='Validate listing entries against filesystem (no changes made)',
-        )
-        subparser.add_argument(
-            '--validate-attrs',
+            '--attr-map',
             type=str,
-            default='size,creation,permissions,uid,gid,checksum,entry_type,path',
-            help='Comma-separated list of attributes to validate (default: size,creation,permissions,uid,gid,checksum,entry_type,path)',
-        )
-        subparser.add_argument(
-            '-q', '--quiet',
-            action='store_true',
-            default=False,
-            help='In validation mode, omit OK entries from output',
+            default='',
+            help=(
+                'Advanced: Comma-separated mapping of filesystem attributes '
+                'to listing column selectors. Format: attr:selector[,…]. '
+                'Selectors: 0-based column index, "earliest"/"e", "latest"/"l".'
+            ),
         )
 
     def __init__(self, parser):
         super().__init__(parser)
         options, _ = parser.parse_known_args()
 
+        # ------------------------------------------------------------------
+        # Common options
+        # ------------------------------------------------------------------
         self.base_dir = str(options.base_dir)
         self.script_base_path = options.script_base_path
         self.dry_run = options.dry_run
-        self.generate_listing_path: Optional[str] = (
-            str(options.generate_listing) if options.generate_listing else None
-        )
-        self.validate_mode: bool = options.validate
-        self.validate_attrs_raw: str = options.validate_attrs
         self.quiet: bool = options.quiet
+        self.checksum_algorithm: str = options.checksum_algorithm
 
         if options.v:
             logger.setLevel(logging.DEBUG)
 
         # ------------------------------------------------------------------
-        # Mutual exclusivity checks
+        # Determine mode from arguments
         # ------------------------------------------------------------------
-        if self.validate_mode and self.generate_listing_path is not None:
-            logger.error(
-                '--validate and --generate-listing cannot be used together'
-            )
-            sys.exit(1)
-
-        if self.validate_mode and options.listing is None:
-            logger.error('--validate requires --listing to be specified')
-            sys.exit(1)
+        self.mode: str = self._determine_mode(options)
 
         # ------------------------------------------------------------------
         # Parse --types
@@ -474,7 +483,6 @@ class ValidateCopy(TackleFactory):
         except ValueError as exc:
             logger.error('Invalid --types: %s', exc)
             sys.exit(1)
-        logger.info('Processing entry types: %s', ', '.join(sorted(self.allowed_types)))
 
         # ------------------------------------------------------------------
         # Validate base-dir
@@ -484,77 +492,184 @@ class ValidateCopy(TackleFactory):
             sys.exit(1)
 
         # ------------------------------------------------------------------
-        # Checksum options (for generate-listing mode)
+        # Mode-specific initialization
         # ------------------------------------------------------------------
-        self.calculate_checksum: bool = options.checksum
-        self.checksum_algorithm: str = options.checksum_algorithm
+        if self.mode == 'generate':
+            self._init_generate_mode(options)
+        elif self.mode == 'validate':
+            self._init_validate_mode(options)
+        elif self.mode == 'apply':
+            self._init_apply_mode(options)
 
-        # ------------------------------------------------------------------
-        # Generate-listing mode — no listing file needed
-        # ------------------------------------------------------------------
-        if self.generate_listing_path is not None:
-            self.listing_path: Optional[str] = None
-            self.attr_map: Dict[str, str] = {}
-            self.validate_attrs: List[str] = []
-            return
+        self._log_startup_settings()
 
-        # ------------------------------------------------------------------
-        # Validate mode — listing file required (checked above)
-        # ------------------------------------------------------------------
-        if self.validate_mode:
-            self.listing_path = str(options.listing)
-            if not os.path.isfile(self.listing_path):
-                logger.error('Listing file not found: %s', self.listing_path)
-                sys.exit(1)
-            # Parse and validate --validate-attrs
-            self.validate_attrs = [
-                a.strip() for a in self.validate_attrs_raw.split(',') if a.strip()
-            ]
-            invalid_attrs = [a for a in self.validate_attrs if a not in VALID_ATTRS]
-            if invalid_attrs:
-                logger.error(
-                    'Invalid attribute(s) in --validate-attrs: %s. '
-                    'Valid attributes: %s',
-                    ', '.join(invalid_attrs),
-                    ', '.join(VALID_ATTRS),
-                )
-                sys.exit(1)
-            self.attr_map = {}
-            return
+    def _determine_mode(self, options) -> str:
+        """Determine the operation mode from CLI arguments.
+        
+        Returns one of: 'validate', 'generate', 'apply'
+        
+        Mode is determined by the mutually exclusive group, so exactly one
+        of --validate, --generate, or --apply will be set.
+        """
+        if options.validate is not None:
+            return 'validate'
+        if options.generate is not None:
+            return 'generate'
+        if options.apply is not None:
+            return 'apply'
+        
+        # This should never happen due to argparse's required=True
+        logger.error('One of --validate, --generate, or --apply is required')
+        sys.exit(1)
 
-        # ------------------------------------------------------------------
-        # Apply mode — listing file required
-        # ------------------------------------------------------------------
-        if options.listing is None:
-            logger.error(
-                '--listing is required when --generate-listing is not used'
-            )
-            sys.exit(1)
+    def _init_generate_mode(self, options) -> None:
+        """Initialize generate mode settings."""
+        self.generate_listing_path: Optional[str] = str(options.generate)
+        self.listing_path: Optional[str] = None
+        self.attr_map: Dict[str, str] = {}
+        self.validate_attrs: List[str] = []
 
-        self.listing_path = str(options.listing)
+        # Handle --attrs for generate mode
+        # Default: include checksum for files (checksum ON by default)
+        self.calculate_checksum: bool = True
+
+        if options.attrs is not None:
+            # Parse attrs to see if checksum is included
+            attrs_list = [a.strip().lower() for a in options.attrs.split(',') if a.strip()]
+            self.calculate_checksum = 'checksum' in attrs_list
+
+    def _init_validate_mode(self, options) -> None:
+        """Initialize validate mode settings."""
+        self.generate_listing_path: Optional[str] = None
+        self.calculate_checksum: bool = False
+
+        # Get listing path from --validate argument (always a pathlib.Path)
+        self.listing_path = str(options.validate)
 
         if not os.path.isfile(self.listing_path):
             logger.error('Listing file not found: %s', self.listing_path)
             sys.exit(1)
 
-        # ------------------------------------------------------------------
-        # Parse --attr-map
-        # ------------------------------------------------------------------
-        try:
-            self.attr_map = parse_attr_map(options.attr_map, allow_empty=True)
-        except ValueError as exc:
-            logger.error('Invalid --attr-map: %s', exc)
+        # Handle --attrs for validate mode
+        # Default: all available attributes
+        default_validate_attrs = 'size,creation,permissions,uid,gid,checksum,entry_type,path'
+
+        if options.attrs is not None:
+            attrs_raw = options.attrs
+        else:
+            attrs_raw = default_validate_attrs
+
+        self.validate_attrs = [
+            a.strip() for a in attrs_raw.split(',') if a.strip()
+        ]
+        invalid_attrs = [a for a in self.validate_attrs if a not in VALID_ATTRS]
+        if invalid_attrs:
+            logger.error(
+                'Invalid attribute(s) in --attrs: %s. '
+                'Valid attributes: %s',
+                ', '.join(invalid_attrs),
+                ', '.join(VALID_ATTRS),
+            )
             sys.exit(1)
 
-        # If attr-map is empty in apply mode, use canonical timestamp mapping
+        self.attr_map: Dict[str, str] = {}
+
+    def _init_apply_mode(self, options) -> None:
+        """Initialize apply mode settings."""
+        self.generate_listing_path: Optional[str] = None
+        self.validate_attrs: List[str] = []
+        self.calculate_checksum: bool = False
+
+        # Get listing path from --apply argument
+        self.listing_path = str(options.apply)
+
+        if not os.path.isfile(self.listing_path):
+            logger.error('Listing file not found: %s', self.listing_path)
+            sys.exit(1)
+
+        # Handle --attrs for apply mode
+        # Default: creation, access, modify (timestamp attributes)
+        if options.attrs is not None:
+            # User specified attrs - convert to attr_map format
+            # For apply mode, --attrs is a simpler way to specify which attrs to set
+            # Each attr maps to its canonical column
+            attrs_list = [a.strip().lower() for a in options.attrs.split(',') if a.strip()]
+            timestamp_attrs = {'creation', 'access', 'modify'}
+            valid_apply_attrs = timestamp_attrs
+
+            invalid_attrs = [a for a in attrs_list if a not in valid_apply_attrs]
+            if invalid_attrs:
+                logger.error(
+                    'Invalid attribute(s) in --attrs for apply mode: %s. '
+                    'Valid attributes: %s',
+                    ', '.join(invalid_attrs),
+                    ', '.join(sorted(valid_apply_attrs)),
+                )
+                sys.exit(1)
+
+            # Build attr_map from attrs list using canonical column indices
+            canonical_indices = {'creation': '0', 'access': '1', 'modify': '2'}
+            self.attr_map = {attr: canonical_indices[attr] for attr in attrs_list}
+        elif options.attr_map:
+            # Old --attr-map style (still supported for advanced selector use)
+            try:
+                self.attr_map = parse_attr_map(options.attr_map, allow_empty=True)
+            except ValueError as exc:
+                logger.error('Invalid --attr-map: %s', exc)
+                sys.exit(1)
+        else:
+            # Default: use canonical timestamp mapping
+            self.attr_map = get_canonical_timestamp_map()
+
+        # If attr-map is empty, use canonical timestamp mapping
         if not self.attr_map:
             self.attr_map = get_canonical_timestamp_map()
-            logger.info(
-                'Using canonical timestamp mapping (empty --attr-map): %s',
-                self.attr_map,
-            )
+
+    # Backward compatibility properties
+    @property
+    def validate_mode(self) -> bool:
+        """Backward compatibility: returns True if in validate mode."""
+        return self.mode == 'validate'
+
+    # ------------------------------------------------------------------
+    # Startup logging
+    # ------------------------------------------------------------------
+
+    def _log_startup_settings(self) -> None:
+        """Log mode and configuration at startup."""
+        # Use the mode attribute directly (set during __init__)
+        mode_name = self.mode
+
+        logger.info('=' * 60)
+        logger.info('ValidateCopy — Mode: %s', mode_name.upper())
+        logger.info('=' * 60)
+        logger.info('Base directory: %s', self.base_dir)
+
+        if mode_name in ('validate', 'apply'):
+            logger.info('Listing file: %s', self.listing_path)
         else:
+            logger.info('Output file: %s', self.generate_listing_path)
+
+        logger.info('Entry types: %s', ', '.join(sorted(self.allowed_types)))
+
+        if mode_name == 'validate':
+            logger.info('Validate attributes: %s', ', '.join(self.validate_attrs))
+            logger.info('Quiet mode: %s', 'enabled' if self.quiet else 'disabled')
+        elif mode_name == 'apply':
             logger.info('Attribute map: %s', self.attr_map)
+
+        if mode_name == 'generate':
+            logger.info('Calculate checksum: %s', 'enabled' if self.calculate_checksum else 'disabled')
+            if self.calculate_checksum:
+                logger.info('Checksum algorithm: %s', self.checksum_algorithm)
+
+        if self.dry_run:
+            logger.info('Dry-run: ENABLED (no changes will be made)')
+
+        if self.script_base_path:
+            logger.info('Script base path: %s', self.script_base_path)
+
+        logger.info('-' * 60)
 
     # ------------------------------------------------------------------
     # Main processing
@@ -596,6 +711,13 @@ class ValidateCopy(TackleFactory):
         Returns:
             0 if all entries passed validation, 1 if any failed.
         """
+        progress_interval = 1000
+        
+        # First pass: count total lines for progress reporting
+        with open(self.listing_path, encoding='utf-8-sig') as fh:
+            total_lines = sum(1 for line in fh if line.strip())
+        logger.info('Loading listing: %s (%d lines)', self.listing_path, total_lines)
+        
         # Parse listing without path resolution (we need relative paths for output)
         entries: List[FileEntry] = []
         
@@ -617,6 +739,7 @@ class ValidateCopy(TackleFactory):
             }[fmt]
 
             reader = csv.reader(fh)
+            processed = 0
             for lineno, cols in enumerate(reader, start=1):
                 if not cols or all(c.strip() == '' for c in cols):
                     continue
@@ -631,13 +754,28 @@ class ValidateCopy(TackleFactory):
                     fe._rel_path = rel_path  # type: ignore[attr-defined]
                     fe.path = full_path
                     entries.append(fe)
+                    processed += 1
+                    
+                    # Progress logging during loading
+                    if processed % progress_interval == 0:
+                        pct = (processed / total_lines) * 100
+                        logger.info(
+                            'Loading entries: %d/%d (%.1f%%)',
+                            processed, total_lines, pct
+                        )
                 except Exception as exc:
                     logger.warning('Line %d: skipping — %s', lineno, exc)
 
+        logger.info('Loaded %d entries from listing', len(entries))
+        
         passed = 0
         failed = 0
+        skipped = 0
+        total = len(entries)
+        
+        logger.info('Validating %d entries...', total)
 
-        for fe in entries:
+        for idx, fe in enumerate(entries, start=1):
             rel_path = getattr(fe, '_rel_path', fe.path)
             
             # Type filter
@@ -646,6 +784,7 @@ class ValidateCopy(TackleFactory):
                     'Skipping %s (type=%s, allowed=%s)',
                     rel_path, fe.entry_type, self.allowed_types,
                 )
+                skipped += 1
                 continue
 
             # Validate against filesystem
@@ -662,23 +801,41 @@ class ValidateCopy(TackleFactory):
                 if not self.quiet:
                     print(f'OK: {rel_path}')
                 passed += 1
+            
+            # Progress logging during validation
+            processed_count = passed + failed + skipped
+            if processed_count % progress_interval == 0:
+                pct = (processed_count / total) * 100
+                logger.info(
+                    'Validation progress: %d/%d (%.1f%%) — %d passed, %d failed, %d skipped',
+                    processed_count, total, pct, passed, failed, skipped
+                )
 
-        total = passed + failed
+        validated_total = passed + failed
         print('---')
-        print(f'Validated {total} files: {passed} passed, {failed} failed')
+        print(f'Validated {validated_total} files: {passed} passed, {failed} failed')
+        
+        logger.info(
+            'Validation complete: %d passed, %d failed, %d skipped',
+            passed, failed, skipped
+        )
 
         return 0 if failed == 0 else 1
 
     def _do_attr_map(self, entries: List[FileEntry]) -> None:
         """Apply timestamps according to ``--attr-map``."""
+        progress_interval = 1000
         success = 0
         skipped = 0
         failed = 0
+        total = len(entries)
 
         # Source attributes needed for date selection
         source_attrs = ['creation', 'access', 'modify']
+        
+        logger.info('Applying attributes to %d entries...', total)
 
-        for fe in entries:
+        for idx, fe in enumerate(entries, start=1):
             # Validate: path exists and has required source data
             errors = fe.validate(source_attrs)
             if errors:
@@ -743,8 +900,17 @@ class ValidateCopy(TackleFactory):
             except Exception as exc:
                 logger.error('Unexpected error for %s: %s', fe.path, exc)
                 failed += 1
+            
+            # Progress logging
+            processed_count = success + skipped + failed
+            if processed_count % progress_interval == 0:
+                pct = (processed_count / total) * 100
+                logger.info(
+                    'Apply progress: %d/%d (%.1f%%) — %d success, %d skipped, %d failed',
+                    processed_count, total, pct, success, skipped, failed
+                )
 
         logger.info(
-            'Done. success=%d  skipped=%d  failed=%d',
+            'Apply complete: %d success, %d skipped, %d failed',
             success, skipped, failed,
         )

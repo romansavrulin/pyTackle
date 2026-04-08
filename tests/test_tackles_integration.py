@@ -916,7 +916,7 @@ class TestValidateCopyChecksum:
     _COL_PATH = 9
 
     def test_generate_listing_with_checksum(self, tmp_path):
-        """--generate-listing --checksum calculates checksums for files."""
+        """--generate with --attrs checksum calculates checksums for files."""
         # Create subdirectory for test files (separate from output)
         test_dir = tmp_path / 'testfiles'
         test_dir.mkdir()
@@ -957,7 +957,7 @@ class TestValidateCopyChecksum:
         assert checksums['file2.txt'] == f'md5:{expected_md5_2}'
 
     def test_generate_listing_checksum_not_for_directories(self, tmp_path):
-        """--generate-listing --checksum does NOT calculate checksums for directories."""
+        """--generate with --attrs checksum does NOT calculate checksums for directories."""
         # Create subdirectory for test files (separate from output)
         test_dir = tmp_path / 'testfiles'
         test_dir.mkdir()
@@ -991,7 +991,7 @@ class TestValidateCopyChecksum:
                 assert checksum.startswith('md5:'), f'File should have checksum: {row}'
 
     def test_generate_listing_checksum_sha256(self, tmp_path):
-        """--generate-listing --checksum --checksum-algorithm sha256 uses correct algorithm."""
+        """--generate with --attrs checksum --checksum-algorithm sha256 uses correct algorithm."""
         # Create subdirectory for test files (separate from output)
         test_dir = tmp_path / 'testfiles'
         test_dir.mkdir()
@@ -1020,7 +1020,7 @@ class TestValidateCopyChecksum:
         assert checksum == f'sha256:{expected_sha256}'
 
     def test_generate_listing_without_checksum(self, tmp_path):
-        """--generate-listing without --checksum does NOT calculate checksums."""
+        """--generate without checksum in --attrs does NOT calculate checksums."""
         # Create subdirectory for test files (separate from output)
         test_dir = tmp_path / 'testfiles'
         test_dir.mkdir()
@@ -1236,7 +1236,7 @@ class TestValidateCopyValidation:
         assert 'does not exist' in errors[0]
 
     def test_validate_attrs_subset(self, tmp_path):
-        """--validate-attrs size,checksum only validates specified attributes."""
+        """--attrs size,checksum only validates specified attributes."""
         content = b'test'
         file1 = tmp_path / 'file.txt'
         file1.write_bytes(content)
@@ -1340,12 +1340,22 @@ class TestValidateCopyValidation:
         assert errors == []
 
     def test_validate_entry_with_none_attr(self, tmp_path):
-        """Validation reports when entry attribute is None but requested."""
+        """Validation skips None/empty attributes when check_fs=True.
+        
+        This is the correct behavior: when a listing doesn't have a checksum,
+        we shouldn't compare the empty value against the filesystem.
+        """
         file1 = tmp_path / 'file.txt'
         file1.write_bytes(b'test')
 
-        # Entry with missing checksum
+        # Entry with missing checksum — should be skipped during validation
         fe = FileEntry(path=str(file1), size=4, checksum=None)
         errors = fe.validate(attrs=['checksum'], check_fs=True)
+        # Empty attributes are silently skipped, no error reported
+        assert errors == []
+
+        # When check_fs=False, we still report that the attr is not set
+        # (this mode checks that attrs ARE populated, not their filesystem match)
+        errors = fe.validate(attrs=['checksum'], check_fs=False)
         assert len(errors) == 1
         assert 'not set in entry' in errors[0]

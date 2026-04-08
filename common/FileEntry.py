@@ -367,8 +367,9 @@ class FileEntry:
             for attr in attrs:
                 my_val = getattr(self, attr, None)
 
-                if my_val is None:
-                    errors.append(f"{attr}: not set in entry")
+                # Skip empty/unset attributes - nothing to validate against filesystem
+                # This handles cases like listings without checksums
+                if my_val is None or (isinstance(my_val, str) and not my_val):
                     continue
 
                 if attr == 'checksum':

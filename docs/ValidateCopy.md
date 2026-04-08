@@ -17,45 +17,99 @@ Verify file copy integrity and restore metadata not preserved during copy operat
    (source)                 (any method)          (destination)        (if needed)
 ```
 
-## CLI Options
+## Operating Modes
 
-### Input/Output Options
+ValidateCopy has three mutually exclusive modes of operation. Each mode takes a listing file path as its argument.
+
+### Validate Mode (`--validate <listing>`)
+
+Validates files against a pre-existing listing. No changes are made to the filesystem.
+
+```bash
+pyTackle ValidateCopy --validate listing.csv --attrs checksum,size /path/to/validate
+```
+
+- `--attrs` specifies which attributes to compare (default: all available)
+- Use `-q` / `--quiet` to show only failures
+- Exit code: 0 = all entries match, 1 = validation failures
+
+### Generate Mode (`--generate <listing>`)
+
+Generates a listing file from the filesystem.
+
+```bash
+pyTackle ValidateCopy --generate output.csv --attrs size,creation,checksum /path/to/scan
+```
+
+- `--attrs` specifies which attributes to include in the listing
+- Checksum calculation is ON by default for files
+- Use `--types fd` to include both files and directories
+
+### Apply Mode (`--apply <listing>`)
+
+Applies attributes from a listing to the filesystem (timestamps, etc.).
+
+```bash
+pyTackle ValidateCopy --apply listing.csv --attrs creation,modify /path/to/update
+```
+
+- `--attrs` specifies which attributes to set (creation, access, modify)
+- Use `--dry-run` to preview changes without modifying anything
+- Default: applies creation, access, and modify timestamps
+
+## CLI Reference
+
+### Mode Selection (mutually exclusive, one required)
 
 | Option | Description |
 |--------|-------------|
-| `--listing PATH` | Path to the CSV listing file. Required unless `--generate-listing` is used. |
-| `--base-dir PATH` | **Required.** Local base directory to resolve relative paths against. |
-| `--generate-listing PATH` | Generate a canonical CSV listing of `--base-dir` and write it to the specified path. When used, `--listing` is not required and no timestamps are applied. |
+| `--validate PATH` | Validate filesystem against the specified listing file. |
+| `--generate PATH` | Generate a listing from the filesystem and write to the specified path. |
+| `--apply PATH` | Apply metadata from the specified listing to the filesystem. |
 
-### Checksum Options
+### Positional Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `base_dir` | Local base directory to resolve relative paths against (required). |
+
+### Common Options
 
 | Option | Description |
 |--------|-------------|
-| `--checksum` | Calculate checksums during listing generation (only for files). |
-| `--checksum-algorithm ALG` | Algorithm for checksum calculation. Default: `md5`. Supports any algorithm from Python's hashlib. |
+| `--attrs ATTRS` | Comma-separated list of attributes. Meaning depends on mode (see below). |
+| `--types TYPES` | Comma-separated entry types to process: `f` (file), `d` (directory), `l` (symlink). Default: `d`. |
+| `-v` | Verbose output (debug level logging). |
+
+### Attribute Options by Mode
+
+The `--attrs` option behaves differently depending on the active mode:
+
+| Mode | `--attrs` Meaning | Default |
+|------|-------------------|---------|
+| **Validate** | Attributes to compare | `size,creation,permissions,uid,gid,checksum,entry_type,path` |
+| **Generate** | Attributes to include in listing | All (checksum ON for files) |
+| **Apply** | Attributes to set on filesystem | `creation,access,modify` |
 
 ### Validation Options
 
 | Option | Description |
 |--------|-------------|
-| `--validate` | Validate listing entries against filesystem (no changes made). Mutually exclusive with `--generate-listing`. |
-| `--validate-attrs ATTRS` | Comma-separated list of attributes to validate. Default: `size,creation,permissions,uid,gid,checksum,entry_type,path`. |
 | `-q, --quiet` | In validation mode, omit OK entries from output (show only failures). |
 
-### Attribute Mapping Options
+### Generation Options
 
 | Option | Description |
 |--------|-------------|
-| `--attr-map MAP` | Comma-separated mapping of filesystem attributes to listing column selectors. Format: `attr:selector[,attr:selector,…]`. See [Attribute Mapping](#attribute-mapping) below. |
-| `--types TYPES` | Comma-separated list of entry types to process: `f` (file), `d` (directory), `l` (symlink). Default: `d` (directories only). |
-| `--script-base-path PATH` | Leading directory prefix to strip from paths in the listing before resolving against `--base-dir`. |
+| `--checksum-algorithm ALG` | Algorithm for checksum calculation. Default: `md5`. Supports any algorithm from Python's hashlib. |
 
-### Execution Options
+### Apply/Path Options
 
 | Option | Description |
 |--------|-------------|
+| `--attr-map MAP` | Advanced: Comma-separated mapping of filesystem attributes to listing column selectors. Format: `attr:selector[,attr:selector,…]`. See [Attribute Mapping](#attribute-mapping). |
+| `--script-base-path PATH` | Leading directory prefix to strip from paths in the listing before resolving. |
 | `--dry-run` | Preview changes without modifying timestamps. |
-| `-v` | Verbose output (debug level logging). |
 
 ## Typical Workflows with Examples
 
@@ -65,10 +119,10 @@ Create a comprehensive listing with checksums for files and directories:
 
 ```bash
 pyTackle ValidateCopy \
-    --generate-listing source_listing.csv \
-    --base-dir /source/path \
-    --checksum \
-    --types fd
+    --generate source_listing.csv \
+    --attrs size,creation,modify,checksum \
+    --types fd \
+    /source/path
 ```
 
 This generates a 10-column CSV with all metadata (timestamps, permissions, ownership, checksums).
@@ -79,9 +133,8 @@ After copying files to a destination, validate that all files match:
 
 ```bash
 pyTackle ValidateCopy \
-    --listing source_listing.csv \
-    --base-dir /destination/path \
-    --validate
+    --validate source_listing.csv \
+    /destination/path
 ```
 
 Output shows `OK:` or `FAIL:` for each entry, with a summary at the end.
@@ -92,10 +145,9 @@ When you only care about data integrity (not metadata):
 
 ```bash
 pyTackle ValidateCopy \
-    --listing source_listing.csv \
-    --base-dir /destination/path \
-    --validate \
-    --validate-attrs checksum
+    --validate source_listing.csv \
+    --attrs checksum \
+    /destination/path
 ```
 
 ### Workflow 4: Validate and show only failures (quiet mode)
@@ -104,10 +156,9 @@ For large directories, show only problems:
 
 ```bash
 pyTackle ValidateCopy \
-    --listing source_listing.csv \
-    --base-dir /destination/path \
-    --validate \
-    -q
+    --validate source_listing.csv \
+    -q \
+    /destination/path
 ```
 
 ### Workflow 5: Apply/fix metadata that wasn't preserved
@@ -116,8 +167,8 @@ Many copy tools don't preserve creation timestamps or ownership. Fix them:
 
 ```bash
 pyTackle ValidateCopy \
-    --listing source_listing.csv \
-    --base-dir /destination/path
+    --apply source_listing.csv \
+    /destination/path
 ```
 
 By default, this applies `creation`, `access`, and `modify` timestamps from the listing.
@@ -128,9 +179,9 @@ When you only need to fix creation times:
 
 ```bash
 pyTackle ValidateCopy \
-    --listing source_listing.csv \
-    --base-dir /destination/path \
-    --attr-map creation:0
+    --apply source_listing.csv \
+    --attrs creation \
+    /destination/path
 ```
 
 ### Workflow 7: Preview changes (dry run)
@@ -139,9 +190,9 @@ See what would be changed without modifying anything:
 
 ```bash
 pyTackle ValidateCopy \
-    --listing source_listing.csv \
-    --base-dir /destination/path \
-    --dry-run
+    --apply source_listing.csv \
+    --dry-run \
+    /destination/path
 ```
 
 ### Workflow 8: Process both files and directories
@@ -150,9 +201,9 @@ By default, only directories are processed. To include files:
 
 ```bash
 pyTackle ValidateCopy \
-    --listing source_listing.csv \
-    --base-dir /destination/path \
-    --types fd
+    --apply source_listing.csv \
+    --types fd \
+    /destination/path
 ```
 
 ## Listing Format
@@ -259,8 +310,8 @@ When `--attr-map` is empty (the default in apply mode), the canonical mapping is
 
 ```bash
 # These are equivalent:
-pyTackle SetCreationTime --listing file.csv --base-dir /path
-pyTackle ValidateCopy --listing file.csv --base-dir /path
+pyTackle SetCreationTime --apply file.csv /path
+pyTackle ValidateCopy --apply file.csv /path
 ```
 
 Using `SetCreationTime` will emit a deprecation warning. Migrate to `ValidateCopy` for new scripts.
@@ -284,9 +335,9 @@ When the listing contains paths with a common prefix that doesn't exist in the d
 # Destination has:  /backup/photos/2020/img.jpg
 
 pyTackle ValidateCopy \
-    --listing source.csv \
-    --base-dir /backup \
-    --script-base-path "server/share"
+    --apply source.csv \
+    --script-base-path "server/share" \
+    /backup
 ```
 
 The `--script-base-path` strips `server/share`, so the resolved path becomes `/backup/photos/2020/img.jpg`.
