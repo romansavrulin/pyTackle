@@ -878,7 +878,7 @@ class ValidateCopy(TackleFactory):
 
             # Apply timestamps using FileEntry.apply_to_fs()
             try:
-                inent = "Set"
+                intent = "Set"
                 if self.dry_run:
                     intent = "[DRY-RUN] Would set"
                 else:
