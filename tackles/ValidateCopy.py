@@ -877,7 +877,7 @@ class ValidateCopy(TackleFactory):
                 continue
 
             if self.dry_run:
-                if len(attrs_to_apply) > 0
+                if len(attrs_to_apply) > 0:
                     parts = ', '.join(
                         f'{a}={getattr(fe, a).isoformat()}' for a in attrs_to_apply
                     )
