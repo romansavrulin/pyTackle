@@ -872,29 +872,24 @@ class ValidateCopy(TackleFactory):
                     setattr(fe, attr, dt)
                     attrs_to_apply.append(attr)
 
-            if skip_entry:
+            if skip_entry or len(attrs_to_apply) == 0:
                 skipped += 1
-                continue
-
-            if self.dry_run:
-                if len(attrs_to_apply) > 0:
-                    parts = ', '.join(
-                        f'{a}={getattr(fe, a).isoformat()}' for a in attrs_to_apply
-                    )
-                    logger.info('[DRY-RUN] Would set %s on %s', parts, fe.path)
-                    success += 1
-                else:
-                    skipped += 1
                 continue
 
             # Apply timestamps using FileEntry.apply_to_fs()
             try:
-                fe.apply_to_fs(attrs=attrs_to_apply)
+                inent = "Set"
+                if self.dry_run:
+                    intent = "[DRY-RUN] Would set"
+                else:
+                    fe.apply_to_fs(attrs=attrs_to_apply)
+
                 parts = ', '.join(
                     f'{a}={getattr(fe, a).isoformat()}' for a in attrs_to_apply
                 )
-                logger.info('Set %s on %s', parts, fe.path)
+                logger.info('%s %s on %s', intent, parts, fe.path)
                 success += 1
+
             except NotImplementedError as exc:
                 logger.warning('%s — skipping %s', exc, fe.path)
                 skipped += 1
