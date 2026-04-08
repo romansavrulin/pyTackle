@@ -8,11 +8,14 @@ from datetime import datetime, timezone
 
 import pytest
 
+import common.fs_attrs as fs_attrs
 from common.fs_attrs import (
+    FSNotPersistedError,
     _stat_creation_time,
     apply_permissions,
+    apply_ownership,
     read_all,
-    set_access_modify_time,
+    set_access_modify_time
 )
 
 
@@ -80,6 +83,13 @@ class TestApplyPermissions:
         mode = stat.S_IMODE(os.stat(tmp_file).st_mode)
         assert mode == 0o444
 
+    def test_raises_if_permissions_not_persisted(self, tmp_file, monkeypatch):
+        # Simulate a "successful" chmod that doesn't actually change FS state.
+        monkeypatch.setattr(os, "chmod", lambda *_a, **_k: None)
+
+        with pytest.raises(FSNotPersistedError, match="permissions not persisted"):
+            apply_permissions(tmp_file, "0o755")
+
 
 # ------------------------------------------------------------------
 # set_access_modify_time
@@ -104,3 +114,16 @@ class TestSetAccessModifyTime:
         assert abs(st_after.st_mtime - target_dt.timestamp()) < 1.0
         # Access time should remain approximately unchanged
         assert abs(st_after.st_atime - st_before.st_atime) < 1.0
+
+
+# ------------------------------------------------------------------
+# apply_ownership (optional)
+# ------------------------------------------------------------------
+
+@pytest.mark.skipif(not hasattr(os, "chown"), reason="os.chown not available on this platform")
+class TestApplyPermissions:
+    def test_raises_if_permissions_not_persisted(self, tmp_file, monkeypatch):
+        monkeypatch.setattr(fs_attrs.os, "chmod", lambda *_a, **_k: None)
+
+        with pytest.raises(FSNotPersistedError, match="permissions not persisted"):
+            apply_permissions(tmp_file, "0o755")

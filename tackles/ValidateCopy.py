@@ -868,8 +868,9 @@ class ValidateCopy(TackleFactory):
                     )
                     skip_entry = True
                     break
-                setattr(fe, attr, dt)
-                attrs_to_apply.append(attr)
+                if getattr(fe, attr) != dt:
+                    setattr(fe, attr, dt)
+                    attrs_to_apply.append(attr)
 
             if skip_entry:
                 skipped += 1

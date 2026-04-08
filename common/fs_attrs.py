@@ -6,7 +6,7 @@ applying timestamps (including platform-specific creation-time setters),
 permissions, and ownership.
 
 Platform-specific creation-time implementations are copied from
-``tackles/ValidateCopy.py`` to avoid coupling this shared module to
+``tackles/SetCreationTime.py`` to avoid coupling this shared module to
 the tackle layer.
 """
 
@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _EPOCH_1601 = datetime(1601, 1, 1, tzinfo=timezone.utc)
+
+# ---------------------------------------------------------------------------
+# Error classes
+# ---------------------------------------------------------------------------
+
+class FSNotPersistedError(RuntimeError):
+    """Raised when an attempted metadata change is not observable via stat()."""
 
 
 # ---------------------------------------------------------------------------
@@ -241,8 +248,16 @@ def apply_timestamps(path: str, attrs: dict) -> None:
 
 
 def apply_permissions(path: str, perms: str) -> None:
-    """Apply an octal permission string (e.g. ``'0o755'``) to *path*."""
-    os.chmod(path, int(perms, 8))
+    """Apply an octal permission string (e.g. '0o755') to *path* and verify."""
+    desired = int(perms, 8) & 0o7777
+    os.chmod(path, desired)
+
+    st = os.stat(path)
+    actual = st.st_mode & 0o7777
+    if actual != desired:
+        raise FSNotPersistedError(
+            f"permissions not persisted for {path!r}: expected {oct(desired)}, got {oct(actual)}"
+        )
 
 
 def apply_ownership(
@@ -250,12 +265,26 @@ def apply_ownership(
     uid: int | None = None,
     gid: int | None = None,
 ) -> None:
-    """Apply *uid* and/or *gid* to *path*.
+    """Apply *uid* and/or *gid* to *path* and verify.
 
-    Requires appropriate privileges (typically root).  If either value is
-    ``None``, the current value from the filesystem is preserved.
+    Requires appropriate privileges (typically root). If either value is None,
+    the current value from the filesystem is preserved.
+
+    Raises FSNotPersistedError if a requested change doesn't stick.
     """
-    st = os.stat(path)
-    effective_uid = uid if uid is not None else st.st_uid
-    effective_gid = gid if gid is not None else st.st_gid
+    st_before = os.stat(path)
+    effective_uid = uid if uid is not None else st_before.st_uid
+    effective_gid = gid if gid is not None else st_before.st_gid
+
     os.chown(path, effective_uid, effective_gid)
+
+    st_after = os.stat(path)
+
+    if uid is not None and st_after.st_uid != effective_uid:
+        raise FSNotPersistedError(
+            f"uid not persisted for {path!r}: expected {effective_uid}, got {st_after.st_uid}"
+        )
+    if gid is not None and st_after.st_gid != effective_gid:
+        raise FSNotPersistedError(
+            f"gid not persisted for {path!r}: expected {effective_gid}, got {st_after.st_gid}"
+        )
