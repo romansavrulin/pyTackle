@@ -10,6 +10,8 @@ from common.attr_map import (
     DATETIME_ATTRS,
     METADATA_ATTRS,
     VALID_ATTRS,
+    get_canonical_all_map,
+    get_canonical_timestamp_map,
     parse_attr_map,
 )
 
@@ -127,6 +129,14 @@ class TestParseAttrMapErrors:
         with pytest.raises(ValueError, match="empty mapping"):
             parse_attr_map("")
 
+    def test_empty_string_allowed_with_allow_empty(self):
+        result = parse_attr_map("", allow_empty=True)
+        assert result == {}
+
+    def test_whitespace_only_allowed_with_allow_empty(self):
+        result = parse_attr_map("   ", allow_empty=True)
+        assert result == {}
+
     def test_negative_index(self):
         with pytest.raises(ValueError, match="non-negative"):
             parse_attr_map("path:-1")
@@ -134,3 +144,50 @@ class TestParseAttrMapErrors:
     def test_non_integer_selector_for_non_datetime(self):
         with pytest.raises(ValueError, match="Invalid selector"):
             parse_attr_map("size:abc")
+
+
+# ------------------------------------------------------------------
+# get_canonical_timestamp_map
+# ------------------------------------------------------------------
+
+class TestGetCanonicalTimestampMap:
+    """Tests for get_canonical_timestamp_map()."""
+
+    def test_returns_datetime_attrs_only(self):
+        result = get_canonical_timestamp_map()
+        assert set(result.keys()) == {"creation", "access", "modify"}
+
+    def test_uses_canonical_column_indices(self):
+        result = get_canonical_timestamp_map()
+        assert result["creation"] == "0"
+        assert result["access"] == "1"
+        assert result["modify"] == "2"
+
+    def test_returns_new_dict_each_time(self):
+        result1 = get_canonical_timestamp_map()
+        result2 = get_canonical_timestamp_map()
+        assert result1 == result2
+        assert result1 is not result2
+
+
+# ------------------------------------------------------------------
+# get_canonical_all_map
+# ------------------------------------------------------------------
+
+class TestGetCanonicalAllMap:
+    """Tests for get_canonical_all_map()."""
+
+    def test_returns_all_attrs(self):
+        result = get_canonical_all_map()
+        assert len(result) == 10
+        for attr in VALID_ATTRS:
+            assert attr in result
+
+    def test_matches_canonical_map(self):
+        result = get_canonical_all_map()
+        assert result == CANONICAL_MAP
+
+    def test_returns_copy_not_reference(self):
+        result = get_canonical_all_map()
+        assert result == CANONICAL_MAP
+        assert result is not CANONICAL_MAP

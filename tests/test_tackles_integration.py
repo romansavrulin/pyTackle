@@ -1,4 +1,4 @@
-"""Integration tests for SetCreationTime and CopyValidateMD5 tackles.
+"""Integration tests for ValidateCopy and CopyValidateMD5 tackles.
 
 These tests capture the **current behaviour** of the two tackles before they
 are refactored to use ``FileEntry``.  They serve as a safety net to ensure
@@ -22,7 +22,7 @@ import pytest
 
 from common.FileEntry import FileEntry, parse_datetime
 
-from tackles.SetCreationTime import (
+from tackles.ValidateCopy import (
     FORMAT_CANONICAL,
     FORMAT_LINUX,
     _extract_dates,
@@ -39,12 +39,12 @@ from tackles.CopyValidateMD5 import CopyValidateMD5
 
 
 # ===================================================================
-# SetCreationTime — parsing helpers
+# ValidateCopy — parsing helpers
 # ===================================================================
 
 
-class TestSetCreationTimeParsing:
-    """Test the internal parsing functions of SetCreationTime."""
+class TestValidateCopyParsing:
+    """Test the internal parsing functions of ValidateCopy."""
 
     # ---------------------------------------------------------------
     # detect_format
@@ -267,11 +267,11 @@ class TestSetCreationTimeParsing:
 
 
 # ===================================================================
-# SetCreationTime — attr-map functionality
+# ValidateCopy — attr-map functionality
 # ===================================================================
 
 
-class TestSetCreationTimeAttrMap:
+class TestValidateCopyAttrMap:
     """Test the attr_map functionality."""
 
     def test_default_attr_map(self):
@@ -328,11 +328,11 @@ class TestSetCreationTimeAttrMap:
 
 
 # ===================================================================
-# SetCreationTime — listing generation
+# ValidateCopy — listing generation
 # ===================================================================
 
 
-class TestSetCreationTimeGeneration:
+class TestValidateCopyGeneration:
     """Test listing generation (canonical 10-column CSV format)."""
 
     # Canonical column indices from CANONICAL_MAP (new order):
@@ -458,11 +458,11 @@ class TestSetCreationTimeGeneration:
 
 
 # ===================================================================
-# SetCreationTime — applying timestamps
+# ValidateCopy — applying timestamps
 # ===================================================================
 
 
-class TestSetCreationTimeApply:
+class TestValidateCopyApply:
     """Test the main workflow (applying timestamps)."""
 
     def test_apply_timestamps_from_listing(self, tmp_path):
@@ -900,3 +900,452 @@ class TestCopyValidateMD5:
         target_file = to_dir / 'sub' / 'dir' / 'nested.txt'
         assert target_file.exists()
         assert target_file.read_bytes() == src_content
+
+
+# ===================================================================
+# ValidateCopy — Checksum Calculation During Listing Generation
+# ===================================================================
+
+
+class TestValidateCopyChecksum:
+    """Test checksum calculation during listing generation."""
+
+    # Canonical column indices
+    _COL_CHECKSUM = 3
+    _COL_ENTRY_TYPE = 4
+    _COL_PATH = 9
+
+    def test_generate_listing_with_checksum(self, tmp_path):
+        """--generate-listing --checksum calculates checksums for files."""
+        # Create subdirectory for test files (separate from output)
+        test_dir = tmp_path / 'testfiles'
+        test_dir.mkdir()
+
+        content1 = b'hello world'
+        content2 = b'goodbye world'
+        file1 = test_dir / 'file1.txt'
+        file2 = test_dir / 'file2.txt'
+        file1.write_bytes(content1)
+        file2.write_bytes(content2)
+
+        output_csv = tmp_path / 'output.csv'
+        count = generate_listing(
+            str(test_dir),
+            str(output_csv),
+            allowed_types={'f'},
+            calculate_checksum=True,
+            checksum_algorithm='md5',
+        )
+
+        assert count == 2
+        assert output_csv.exists()
+
+        # Read and verify checksums
+        with open(output_csv, encoding='utf-8') as fh:
+            reader = csv.reader(fh)
+            rows = list(reader)
+
+        assert len(rows) == 2
+
+        # Build a path-to-checksum mapping
+        checksums = {row[self._COL_PATH]: row[self._COL_CHECKSUM] for row in rows}
+
+        expected_md5_1 = hashlib.md5(content1).hexdigest()
+        expected_md5_2 = hashlib.md5(content2).hexdigest()
+
+        assert checksums['file1.txt'] == f'md5:{expected_md5_1}'
+        assert checksums['file2.txt'] == f'md5:{expected_md5_2}'
+
+    def test_generate_listing_checksum_not_for_directories(self, tmp_path):
+        """--generate-listing --checksum does NOT calculate checksums for directories."""
+        # Create subdirectory for test files (separate from output)
+        test_dir = tmp_path / 'testfiles'
+        test_dir.mkdir()
+
+        subdir = test_dir / 'subdir'
+        subdir.mkdir()
+        file1 = test_dir / 'file.txt'
+        file1.write_bytes(b'content')
+
+        output_csv = tmp_path / 'output.csv'
+        generate_listing(
+            str(test_dir),
+            str(output_csv),
+            allowed_types={'f', 'd'},
+            calculate_checksum=True,
+        )
+
+        # Read and verify
+        with open(output_csv, encoding='utf-8') as fh:
+            reader = csv.reader(fh)
+            rows = list(reader)
+
+        for row in rows:
+            entry_type = row[self._COL_ENTRY_TYPE]
+            checksum = row[self._COL_CHECKSUM]
+            if entry_type == 'd':
+                # Directories should NOT have checksums
+                assert checksum == '', f'Directory should not have checksum: {row}'
+            elif entry_type == 'f':
+                # Files should have checksums
+                assert checksum.startswith('md5:'), f'File should have checksum: {row}'
+
+    def test_generate_listing_checksum_sha256(self, tmp_path):
+        """--generate-listing --checksum --checksum-algorithm sha256 uses correct algorithm."""
+        # Create subdirectory for test files (separate from output)
+        test_dir = tmp_path / 'testfiles'
+        test_dir.mkdir()
+
+        content = b'test content for sha256'
+        file1 = test_dir / 'file.txt'
+        file1.write_bytes(content)
+
+        output_csv = tmp_path / 'output.csv'
+        generate_listing(
+            str(test_dir),
+            str(output_csv),
+            allowed_types={'f'},
+            calculate_checksum=True,
+            checksum_algorithm='sha256',
+        )
+
+        with open(output_csv, encoding='utf-8') as fh:
+            reader = csv.reader(fh)
+            rows = list(reader)
+
+        assert len(rows) == 1
+        checksum = rows[0][self._COL_CHECKSUM]
+
+        expected_sha256 = hashlib.sha256(content).hexdigest()
+        assert checksum == f'sha256:{expected_sha256}'
+
+    def test_generate_listing_without_checksum(self, tmp_path):
+        """--generate-listing without --checksum does NOT calculate checksums."""
+        # Create subdirectory for test files (separate from output)
+        test_dir = tmp_path / 'testfiles'
+        test_dir.mkdir()
+
+        file1 = test_dir / 'file.txt'
+        file1.write_bytes(b'content')
+
+        output_csv = tmp_path / 'output.csv'
+        generate_listing(
+            str(test_dir),
+            str(output_csv),
+            allowed_types={'f'},
+            calculate_checksum=False,  # Explicitly disabled
+        )
+
+        with open(output_csv, encoding='utf-8') as fh:
+            reader = csv.reader(fh)
+            rows = list(reader)
+
+        assert len(rows) == 1
+        checksum = rows[0][self._COL_CHECKSUM]
+        assert checksum == '', 'Checksum should be empty when not requested'
+
+
+# ===================================================================
+# ValidateCopy — Attr-Map Default Change
+# ===================================================================
+
+
+class TestValidateCopyAttrMapDefault:
+    """Test the new default behavior for --attr-map."""
+
+    def test_empty_attr_map_uses_canonical_mapping(self):
+        """Empty --attr-map in apply mode uses canonical timestamp mapping."""
+        from common.attr_map import get_canonical_timestamp_map, parse_attr_map
+
+        # Empty string with allow_empty=True returns empty dict
+        result = parse_attr_map('', allow_empty=True)
+        assert result == {}
+
+        # The canonical timestamp map provides the default
+        canonical = get_canonical_timestamp_map()
+        assert canonical == {'creation': '0', 'access': '1', 'modify': '2'}
+
+    def test_explicit_attr_map_still_works(self):
+        """Explicit --attr-map creation:e still works as before."""
+        result = parse_attr_map('creation:e')
+        assert result == {'creation': 'earliest'}
+
+        result = parse_attr_map('creation:0, access:1, modify:2')
+        assert result == {'creation': '0', 'access': '1', 'modify': '2'}
+
+    def test_attr_map_with_latest(self):
+        """Explicit --attr-map with latest selector works."""
+        result = parse_attr_map('modify:l')
+        assert result == {'modify': 'latest'}
+
+    def test_generate_listing_mode_ignores_attr_map(self, tmp_path):
+        """Generate listing mode works without --attr-map."""
+        # Create subdirectory for test files (separate from output)
+        test_dir = tmp_path / 'testfiles'
+        test_dir.mkdir()
+
+        file1 = test_dir / 'test.txt'
+        file1.write_bytes(b'test')
+
+        output_csv = tmp_path / 'output.csv'
+
+        # generate_listing doesn't use attr_map at all
+        count = generate_listing(
+            str(test_dir),
+            str(output_csv),
+            allowed_types={'f'},
+        )
+
+        assert count == 1
+        assert output_csv.exists()
+
+
+# ===================================================================
+# ValidateCopy — Validation Mode
+# ===================================================================
+
+
+class TestValidateCopyValidation:
+    """Test the validation mode functionality."""
+
+    # Canonical column indices
+    _COL_CREATION = 0
+    _COL_ACCESS = 1
+    _COL_MODIFY = 2
+    _COL_CHECKSUM = 3
+    _COL_ENTRY_TYPE = 4
+    _COL_PERMISSIONS = 5
+    _COL_UID = 6
+    _COL_GID = 7
+    _COL_SIZE = 8
+    _COL_PATH = 9
+
+    def _create_canonical_row(
+        self,
+        path: str,
+        size: int = 0,
+        entry_type: str = 'f',
+        checksum: str = '',
+        creation: str = '',
+        access: str = '',
+        modify: str = '',
+        permissions: str = '',
+        uid: str = '',
+        gid: str = '',
+    ) -> str:
+        """Helper to create a canonical CSV row."""
+        cols = [''] * 10
+        cols[self._COL_CREATION] = creation
+        cols[self._COL_ACCESS] = access
+        cols[self._COL_MODIFY] = modify
+        cols[self._COL_CHECKSUM] = checksum
+        cols[self._COL_ENTRY_TYPE] = entry_type
+        cols[self._COL_PERMISSIONS] = permissions
+        cols[self._COL_UID] = uid
+        cols[self._COL_GID] = gid
+        cols[self._COL_SIZE] = str(size)
+        cols[self._COL_PATH] = path
+        return ','.join(cols)
+
+    def test_validate_valid_listing_returns_zero(self, tmp_path, capsys):
+        """--validate with valid listing returns 0 when all files match."""
+        # Create subdirectory for test files (separate from output)
+        test_dir = tmp_path / 'testfiles'
+        test_dir.mkdir()
+
+        content = b'test content'
+        file1 = test_dir / 'file.txt'
+        file1.write_bytes(content)
+
+        # Generate a listing first to get actual attributes
+        listing_csv = tmp_path / 'listing.csv'
+        generate_listing(
+            str(test_dir),
+            str(listing_csv),
+            allowed_types={'f'},
+            calculate_checksum=True,
+        )
+
+        # Parse the listing and validate
+        entries = parse_listing(str(listing_csv), str(test_dir))
+        assert len(entries) == 1
+
+        # Validate the entry
+        fe = entries[0]
+        errors = fe.validate(attrs=['size', 'checksum'], check_fs=True)
+        assert errors == [], f'Expected no errors, got: {errors}'
+
+    def test_validate_mismatched_files_returns_errors(self, tmp_path):
+        """--validate with mismatched files returns validation errors."""
+        # Create test file
+        file1 = tmp_path / 'file.txt'
+        file1.write_bytes(b'actual content')
+
+        # Create a listing with WRONG checksum
+        listing_csv = tmp_path / 'listing.csv'
+        wrong_checksum = 'md5:deadbeefdeadbeefdeadbeefdeadbeef'
+        row = self._create_canonical_row(
+            path='file.txt',
+            size=14,  # len(b'actual content')
+            entry_type='f',
+            checksum=wrong_checksum,
+        )
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        entries = parse_listing(str(listing_csv), str(tmp_path))
+        assert len(entries) == 1
+
+        fe = entries[0]
+        errors = fe.validate(attrs=['checksum'], check_fs=True)
+        assert len(errors) == 1
+        assert 'checksum mismatch' in errors[0]
+
+    def test_validate_size_mismatch(self, tmp_path):
+        """--validate detects size mismatches."""
+        file1 = tmp_path / 'file.txt'
+        file1.write_bytes(b'actual content')  # 14 bytes
+
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(
+            path='file.txt',
+            size=999,  # Wrong size
+            entry_type='f',
+        )
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        entries = parse_listing(str(listing_csv), str(tmp_path))
+        fe = entries[0]
+        errors = fe.validate(attrs=['size'], check_fs=True)
+        assert len(errors) == 1
+        assert 'size mismatch' in errors[0]
+
+    def test_validate_missing_file(self, tmp_path):
+        """--validate detects missing files."""
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(
+            path='nonexistent.txt',
+            size=100,
+            entry_type='f',
+        )
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        entries = parse_listing(str(listing_csv), str(tmp_path))
+        fe = entries[0]
+        errors = fe.validate(attrs=['size'], check_fs=True)
+        assert len(errors) >= 1
+        assert 'does not exist' in errors[0]
+
+    def test_validate_attrs_subset(self, tmp_path):
+        """--validate-attrs size,checksum only validates specified attributes."""
+        content = b'test'
+        file1 = tmp_path / 'file.txt'
+        file1.write_bytes(content)
+
+        # Create a FileEntry with correct size but wrong permissions
+        fe = FileEntry.from_fs_path(str(file1))
+        fe.permissions = '0o000'  # Wrong permissions
+
+        # Validate only size — should pass
+        errors = fe.validate(attrs=['size'], check_fs=True)
+        assert errors == []
+
+        # Validate permissions — should fail
+        errors = fe.validate(attrs=['permissions'], check_fs=True)
+        assert len(errors) == 1
+        assert 'permissions mismatch' in errors[0]
+
+    def test_validate_entry_type(self, tmp_path):
+        """--validate detects entry_type mismatches."""
+        file1 = tmp_path / 'file.txt'
+        file1.write_bytes(b'content')
+
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(
+            path='file.txt',
+            entry_type='d',  # Wrong — it's actually a file
+        )
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        entries = parse_listing(str(listing_csv), str(tmp_path))
+        fe = entries[0]
+        errors = fe.validate(attrs=['entry_type'], check_fs=True)
+        assert len(errors) == 1
+        assert 'entry_type mismatch' in errors[0]
+
+    def test_validate_path_existence_only(self, tmp_path):
+        """--validate with no attrs only checks path existence."""
+        file1 = tmp_path / 'exists.txt'
+        file1.write_bytes(b'content')
+
+        fe = FileEntry(path=str(file1))
+        errors = fe.validate()  # No attrs — just check existence
+        assert errors == []
+
+        fe2 = FileEntry(path=str(tmp_path / 'missing.txt'))
+        errors = fe2.validate()
+        assert len(errors) == 1
+        assert 'does not exist' in errors[0]
+
+    def test_validate_checksum_algorithm_prefix(self, tmp_path):
+        """Checksum validation handles algorithm prefix correctly."""
+        content = b'test content'
+        file1 = tmp_path / 'file.txt'
+        file1.write_bytes(content)
+
+        expected_md5 = hashlib.md5(content).hexdigest()
+
+        # Entry with algorithm prefix
+        fe = FileEntry(path=str(file1), checksum=f'md5:{expected_md5}')
+        errors = fe.validate(attrs=['checksum'], check_fs=True)
+        assert errors == []
+
+        # Entry without algorithm prefix (assumes md5)
+        fe2 = FileEntry(path=str(file1), checksum=expected_md5)
+        errors = fe2.validate(attrs=['checksum'], check_fs=True)
+        assert errors == []
+
+    def test_validate_sha256_checksum(self, tmp_path):
+        """Checksum validation works with SHA256."""
+        content = b'test content for sha256'
+        file1 = tmp_path / 'file.txt'
+        file1.write_bytes(content)
+
+        expected_sha256 = hashlib.sha256(content).hexdigest()
+
+        fe = FileEntry(path=str(file1), checksum=f'sha256:{expected_sha256}')
+        errors = fe.validate(attrs=['checksum'], check_fs=True)
+        assert errors == []
+
+        # Wrong SHA256
+        fe2 = FileEntry(path=str(file1), checksum='sha256:deadbeef')
+        errors = fe2.validate(attrs=['checksum'], check_fs=True)
+        assert len(errors) == 1
+        assert 'checksum mismatch' in errors[0]
+
+    def test_validate_multiple_attrs(self, tmp_path):
+        """Validation can check multiple attributes at once."""
+        content = b'test'
+        file1 = tmp_path / 'file.txt'
+        file1.write_bytes(content)
+
+        # Read actual attributes
+        fe = FileEntry.from_fs_path(str(file1))
+        fe.calculate_checksum(algorithm='md5')
+
+        # Validate multiple attrs
+        errors = fe.validate(
+            attrs=['size', 'checksum', 'entry_type'],
+            check_fs=True,
+        )
+        assert errors == []
+
+    def test_validate_entry_with_none_attr(self, tmp_path):
+        """Validation reports when entry attribute is None but requested."""
+        file1 = tmp_path / 'file.txt'
+        file1.write_bytes(b'test')
+
+        # Entry with missing checksum
+        fe = FileEntry(path=str(file1), size=4, checksum=None)
+        errors = fe.validate(attrs=['checksum'], check_fs=True)
+        assert len(errors) == 1
+        assert 'not set in entry' in errors[0]

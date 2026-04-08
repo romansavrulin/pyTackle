@@ -6,7 +6,7 @@ applying timestamps (including platform-specific creation-time setters),
 permissions, and ownership.
 
 Platform-specific creation-time implementations are copied from
-``tackles/SetCreationTime.py`` to avoid coupling this shared module to
+``tackles/ValidateCopy.py`` to avoid coupling this shared module to
 the tackle layer.
 """
 

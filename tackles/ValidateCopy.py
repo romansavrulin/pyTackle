@@ -1,6 +1,6 @@
 """
-SetCreationTime tackle — reads a CSV file listing and sets file/directory
-timestamps on the local filesystem.
+ValidateCopy tackle — reads a CSV file listing and sets file/directory
+timestamps on the local filesystem, or validates copies against a listing.
 
 Supports two listing formats (auto-detected):
   Format 1: Canonical, 10 columns — full pyTackle format
@@ -23,7 +23,12 @@ import sys
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from common.attr_map import CANONICAL_MAP, parse_attr_map  # noqa: F401 — re-exported
+from common.attr_map import (
+    CANONICAL_MAP,
+    VALID_ATTRS,
+    get_canonical_timestamp_map,
+    parse_attr_map,
+)  # noqa: F401 — re-exported
 from common.FileEntry import FileEntry
 from common.fs_attrs import (
     set_creation_time,                               # noqa: F401 — re-exported
@@ -246,11 +251,16 @@ def generate_listing(
     base_dir: str,
     output_path: str,
     allowed_types: set,
+    calculate_checksum: bool = False,
+    checksum_algorithm: str = 'md5',
 ) -> int:
     """Walk *base_dir* and write a canonical 10-column CSV listing to *output_path*.
 
     Uses :meth:`FileEntry.from_fs_path` to read filesystem attributes and
     :func:`common.listing.write_listing` to serialise the canonical format.
+
+    If *calculate_checksum* is True, checksums are computed for files
+    (entry_type='f') using the specified *checksum_algorithm*.
 
     Returns the number of entries written.
     """
@@ -292,7 +302,16 @@ def generate_listing(
                 except OSError as exc:
                     logger.warning('Cannot stat %s: %s', full_path, exc)
                     continue
-                # Store relative path from base_dir
+                # Calculate checksum for files if requested (before changing path!)
+                if calculate_checksum and fe.entry_type == 'f':
+                    try:
+                        fe.calculate_checksum(algorithm=checksum_algorithm)
+                    except OSError as exc:
+                        logger.warning(
+                            'Cannot calculate checksum for %s: %s',
+                            full_path, exc,
+                        )
+                # Store relative path from base_dir (after checksum calculation)
                 fe.path = os.path.relpath(full_path, base)
                 yield fe
 
@@ -303,8 +322,8 @@ def generate_listing(
 # Tackle class
 # ---------------------------------------------------------------------------
 
-class SetCreationTime(TackleFactory):
-    """Read a directory listing CSV and set timestamps on local entries."""
+class ValidateCopy(TackleFactory):
+    """Read a directory listing CSV and validate or set timestamps on local entries."""
 
     @classmethod
     def arg_parser(cls, subparser):
@@ -339,14 +358,16 @@ class SetCreationTime(TackleFactory):
         subparser.add_argument(
             '--attr-map',
             type=str,
-            default='creation:e',
+            default='',
             help=(
                 'Comma-separated mapping of filesystem attributes to listing '
                 'column selectors.  Format: "attr:selector[,attr:selector,…]". '
                 'Attributes: creation, access, modify.  '
                 'Selectors: a 0-based column index, or "earliest" / "latest" '
                 '(short: "e" / "l") to pick the min/max date from the row.  '
-                'Default: "creation:e" (set creation time to earliest date).  '
+                'Default: empty — in apply mode, uses canonical mapping '
+                '(creation→col0, access→col1, modify→col2); in generate-listing '
+                'mode, attr-map is not used.  '
                 'Example: --attr-map="creation:1,access:2,modify:e"'
             ),
         )
@@ -384,6 +405,36 @@ class SetCreationTime(TackleFactory):
             action='store_true',
             help='Verbose output',
         )
+        subparser.add_argument(
+            '--checksum',
+            action='store_true',
+            default=False,
+            help='Calculate checksums during listing generation (only for files)',
+        )
+        subparser.add_argument(
+            '--checksum-algorithm',
+            type=str,
+            default='md5',
+            help='Algorithm for checksum calculation (default: md5)',
+        )
+        subparser.add_argument(
+            '--validate',
+            action='store_true',
+            default=False,
+            help='Validate listing entries against filesystem (no changes made)',
+        )
+        subparser.add_argument(
+            '--validate-attrs',
+            type=str,
+            default='size,creation,permissions,uid,gid,checksum,entry_type,path',
+            help='Comma-separated list of attributes to validate (default: size,creation,permissions,uid,gid,checksum,entry_type,path)',
+        )
+        subparser.add_argument(
+            '-q', '--quiet',
+            action='store_true',
+            default=False,
+            help='In validation mode, omit OK entries from output',
+        )
 
     def __init__(self, parser):
         super().__init__(parser)
@@ -395,9 +446,25 @@ class SetCreationTime(TackleFactory):
         self.generate_listing_path: Optional[str] = (
             str(options.generate_listing) if options.generate_listing else None
         )
+        self.validate_mode: bool = options.validate
+        self.validate_attrs_raw: str = options.validate_attrs
+        self.quiet: bool = options.quiet
 
         if options.v:
             logger.setLevel(logging.DEBUG)
+
+        # ------------------------------------------------------------------
+        # Mutual exclusivity checks
+        # ------------------------------------------------------------------
+        if self.validate_mode and self.generate_listing_path is not None:
+            logger.error(
+                '--validate and --generate-listing cannot be used together'
+            )
+            sys.exit(1)
+
+        if self.validate_mode and options.listing is None:
+            logger.error('--validate requires --listing to be specified')
+            sys.exit(1)
 
         # ------------------------------------------------------------------
         # Parse --types
@@ -417,11 +484,42 @@ class SetCreationTime(TackleFactory):
             sys.exit(1)
 
         # ------------------------------------------------------------------
+        # Checksum options (for generate-listing mode)
+        # ------------------------------------------------------------------
+        self.calculate_checksum: bool = options.checksum
+        self.checksum_algorithm: str = options.checksum_algorithm
+
+        # ------------------------------------------------------------------
         # Generate-listing mode — no listing file needed
         # ------------------------------------------------------------------
         if self.generate_listing_path is not None:
             self.listing_path: Optional[str] = None
             self.attr_map: Dict[str, str] = {}
+            self.validate_attrs: List[str] = []
+            return
+
+        # ------------------------------------------------------------------
+        # Validate mode — listing file required (checked above)
+        # ------------------------------------------------------------------
+        if self.validate_mode:
+            self.listing_path = str(options.listing)
+            if not os.path.isfile(self.listing_path):
+                logger.error('Listing file not found: %s', self.listing_path)
+                sys.exit(1)
+            # Parse and validate --validate-attrs
+            self.validate_attrs = [
+                a.strip() for a in self.validate_attrs_raw.split(',') if a.strip()
+            ]
+            invalid_attrs = [a for a in self.validate_attrs if a not in VALID_ATTRS]
+            if invalid_attrs:
+                logger.error(
+                    'Invalid attribute(s) in --validate-attrs: %s. '
+                    'Valid attributes: %s',
+                    ', '.join(invalid_attrs),
+                    ', '.join(VALID_ATTRS),
+                )
+                sys.exit(1)
+            self.attr_map = {}
             return
 
         # ------------------------------------------------------------------
@@ -443,29 +541,44 @@ class SetCreationTime(TackleFactory):
         # Parse --attr-map
         # ------------------------------------------------------------------
         try:
-            self.attr_map = parse_attr_map(options.attr_map)
+            self.attr_map = parse_attr_map(options.attr_map, allow_empty=True)
         except ValueError as exc:
             logger.error('Invalid --attr-map: %s', exc)
             sys.exit(1)
-        logger.info('Attribute map: %s', self.attr_map)
+
+        # If attr-map is empty in apply mode, use canonical timestamp mapping
+        if not self.attr_map:
+            self.attr_map = get_canonical_timestamp_map()
+            logger.info(
+                'Using canonical timestamp mapping (empty --attr-map): %s',
+                self.attr_map,
+            )
+        else:
+            logger.info('Attribute map: %s', self.attr_map)
 
     # ------------------------------------------------------------------
     # Main processing
     # ------------------------------------------------------------------
 
-    def do(self):
+    def do(self) -> int:
+        # Validate mode
+        if self.validate_mode:
+            return self._do_validate()
+
         # Generate-listing mode
         if self.generate_listing_path is not None:
             count = generate_listing(
                 self.base_dir,
                 self.generate_listing_path,
                 self.allowed_types,
+                calculate_checksum=self.calculate_checksum,
+                checksum_algorithm=self.checksum_algorithm,
             )
             logger.info(
                 'Generated listing with %d entries: %s',
                 count, self.generate_listing_path,
             )
-            return
+            return 0
 
         # Apply mode — parse listing with path resolution
         entries = parse_listing(
@@ -475,6 +588,86 @@ class SetCreationTime(TackleFactory):
         )
         logger.info('Parsed %d entries from listing', len(entries))
         self._do_attr_map(entries)
+        return 0
+
+    def _do_validate(self) -> int:
+        """Validate listing entries against the filesystem.
+        
+        Returns:
+            0 if all entries passed validation, 1 if any failed.
+        """
+        # Parse listing without path resolution (we need relative paths for output)
+        entries: List[FileEntry] = []
+        
+        with open(self.listing_path, encoding='utf-8-sig', newline='') as fh:
+            first_line = fh.readline()
+            if not first_line:
+                logger.info('Empty listing file')
+                print('---')
+                print('Validated 0 files: 0 passed, 0 failed')
+                return 0
+
+            fmt = detect_format(first_line)
+            logger.info('Detected listing format: %s', fmt)
+
+            fh.seek(0)
+            row_parser = {
+                FORMAT_CANONICAL: _parse_row_canonical,
+                FORMAT_LINUX: _parse_row_linux,
+            }[fmt]
+
+            reader = csv.reader(fh)
+            for lineno, cols in enumerate(reader, start=1):
+                if not cols or all(c.strip() == '' for c in cols):
+                    continue
+                try:
+                    fe = row_parser(cols)
+                    # Store relative path before resolution for reporting
+                    rel_path = normalize_path(fe.path, self.script_base_path)
+                    full_path = os.path.normpath(
+                        os.path.join(self.base_dir, rel_path)
+                    )
+                    # Store both: relative for reporting, full for validation
+                    fe._rel_path = rel_path  # type: ignore[attr-defined]
+                    fe.path = full_path
+                    entries.append(fe)
+                except Exception as exc:
+                    logger.warning('Line %d: skipping — %s', lineno, exc)
+
+        passed = 0
+        failed = 0
+
+        for fe in entries:
+            rel_path = getattr(fe, '_rel_path', fe.path)
+            
+            # Type filter
+            if fe.entry_type and fe.entry_type not in self.allowed_types:
+                logger.debug(
+                    'Skipping %s (type=%s, allowed=%s)',
+                    rel_path, fe.entry_type, self.allowed_types,
+                )
+                continue
+
+            # Validate against filesystem
+            errors = fe.validate(attrs=self.validate_attrs, check_fs=True)
+
+            if errors:
+                # Format error messages nicely
+                error_parts = []
+                for err in errors:
+                    error_parts.append(err)
+                print(f'FAIL: {rel_path}: {", ".join(error_parts)}')
+                failed += 1
+            else:
+                if not self.quiet:
+                    print(f'OK: {rel_path}')
+                passed += 1
+
+        total = passed + failed
+        print('---')
+        print(f'Validated {total} files: {passed} passed, {failed} failed')
+
+        return 0 if failed == 0 else 1
 
     def _do_attr_map(self, entries: List[FileEntry]) -> None:
         """Apply timestamps according to ``--attr-map``."""

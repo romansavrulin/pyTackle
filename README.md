@@ -18,8 +18,13 @@ Available subcommands:
 
 | Subcommand | Description |
 |---|---|
+| `ValidateCopy` | Verify file copy integrity and restore metadata |
 | `CopyValidateMD5` | Copy files listed in an MD5 manifest, verifying checksums at source and destination |
+| `ZfsIotop` | ZFS I/O monitoring |
+| `GetCoursera` | Coursera content downloader |
 | `TestTackle` | Minimal placeholder tackle |
+
+📚 **[Full Documentation](docs/README.md)** — Detailed guides for each tackle
 
 ### CopyValidateMD5
 

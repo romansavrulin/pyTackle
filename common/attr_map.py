@@ -1,7 +1,7 @@
 """Attr-map parsing, column mapping constants, and meta-selectors.
 
 Generalises the ``--attr-map`` parsing originally found in
-:pymod:`tackles.SetCreationTime` to support all ten canonical
+:pymod:`tackles.ValidateCopy` to support all ten canonical
 :class:`~common.FileEntry.FileEntry` attributes.
 """
 
@@ -58,10 +58,32 @@ CANONICAL_MAP: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
+# Canonical map helpers
+# ---------------------------------------------------------------------------
+
+def get_canonical_timestamp_map() -> dict[str, str]:
+    """Return canonical mapping for datetime attributes only.
+
+    Returns:
+        Dict mapping 'creation', 'access', 'modify' to their canonical column indices.
+    """
+    return {attr: CANONICAL_MAP[attr] for attr in DATETIME_ATTRS}
+
+
+def get_canonical_all_map() -> dict[str, str]:
+    """Return canonical mapping for all attributes.
+
+    Returns:
+        Dict mapping all attributes to their canonical column indices.
+    """
+    return CANONICAL_MAP.copy()
+
+
+# ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
 
-def parse_attr_map(raw: str) -> dict[str, str]:
+def parse_attr_map(raw: str, *, allow_empty: bool = False) -> dict[str, str]:
     """Parse an ``--attr-map`` string into an ``{attr_name: selector}`` dict.
 
     *raw* is a comma-separated list of ``attr:selector`` pairs, e.g.
@@ -137,7 +159,7 @@ def parse_attr_map(raw: str) -> dict[str, str]:
 
         attr_map[attr] = selector
 
-    if not attr_map:
+    if not attr_map and not allow_empty:
         raise ValueError('--attr-map produced an empty mapping')
 
     return attr_map
