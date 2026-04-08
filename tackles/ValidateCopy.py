@@ -286,8 +286,14 @@ def generate_listing(
     """
     base = os.path.normpath(base_dir)
 
-    def _collect_entries():
+    def _collect_entries() -> List[FileEntry]:
         """Yield :class:`FileEntry` objects for every matching path."""
+
+        progress_interval = 1000
+        processed = 0
+
+        entries = []
+
         for dirpath, dirnames, filenames in os.walk(base):
             # Collect all full paths in this directory level
             paths: List[str] = []
@@ -322,20 +328,53 @@ def generate_listing(
                 except OSError as exc:
                     logger.warning('Cannot stat %s: %s', full_path, exc)
                     continue
-                # Calculate checksum for files if requested (before changing path!)
-                if calculate_checksum and fe.entry_type == 'f':
-                    try:
-                        fe.calculate_checksum(algorithm=checksum_algorithm)
-                    except OSError as exc:
-                        logger.warning(
-                            'Cannot calculate checksum for %s: %s',
-                            full_path, exc,
-                        )
-                # Store relative path from base_dir (after checksum calculation)
-                fe.path = os.path.relpath(full_path, base)
-                yield fe
+                
+                processed += 1
+                    
+                # Progress logging during loading
+                if processed % progress_interval == 0:
+                    logger.info(
+                        'Collecting entries from FS: %d',
+                        processed
+                    )
+                entries.append(fe)
+                #yield fe
+        return entries
 
-    return write_listing(output_path, _collect_entries())
+    logger.info("Collecting fs...")
+    entries = _collect_entries()
+    # Calculate checksum for files if requested (before changing path!)
+    logger.info(f"Collected {len(entries)} entries")
+    logger.info(f"Calculating checksums...")
+    if calculate_checksum:
+        total_lines = len(entries)
+        progress_interval = total_lines / 1000
+        if progress_interval < 1:
+            progress_interval = 1
+        if progress_interval > 100:
+            progress_interval = 100
+        processed = 0
+        for entry in entries:
+            processed += 1
+            if entry.entry_type == 'f':
+                # Progress logging during loading
+                if processed % progress_interval == 0:
+                    pct = (processed / total_lines) * 100
+                    logger.info(
+                        'Calculating checksums: %d/%d (%.1f%%)',
+                        processed, total_lines, pct
+                    )
+                try:
+                    entry.calculate_checksum(algorithm=checksum_algorithm)
+                    # Store relative path from base_dir (after checksum calculation)
+                    entry.path = os.path.relpath(entry.path, base)
+
+                except OSError as exc:
+                    logger.warning(
+                        'Cannot calculate checksum for %s: %s',
+                        entry.path, exc,
+                    )
+    return write_listing(output_path, entries)
 
 
 # ---------------------------------------------------------------------------
