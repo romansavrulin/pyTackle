@@ -366,6 +366,7 @@ class FileEntry:
 
             for attr in attrs:
                 my_val = getattr(self, attr, None)
+                
 
                 # Skip empty/unset attributes - nothing to validate against filesystem
                 # This handles cases like listings without checksums
@@ -389,9 +390,16 @@ class FileEntry:
                         errors.append(f"checksum calculation failed: {exc}")
                 else:
                     fs_val = getattr(fs_entry, attr, None)
-                    if my_val != fs_val:
+                    success = False
+                    if isinstance(my_val, datetime) and isinstance(fs_val, datetime):
+                        if  fs_attrs.timestamps_are_close(my_val, fs_val):
+                            success = True
+                    elif my_val == fs_val:
+                            success = True
+
+                    if not success:
                         errors.append(
-                            f"{attr} mismatch: entry={my_val!r}, fs={fs_val!r}"
+                            f"{attr} mismatch: entry={my_val}, fs={fs_val}"
                         )
         else:
             # Just check that attrs are not None
