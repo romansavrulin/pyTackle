@@ -17,7 +17,7 @@ import os
 import platform
 import stat
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ def _stat_creation_time(st: os.stat_result) -> datetime:
     try:
         ts = st.st_birthtime
     except AttributeError:
-        ts = st.st_ctime
+        ts = st.st_birthtime_ns
     return datetime.fromtimestamp(ts, tz=timezone.utc)
 
 
@@ -92,6 +92,11 @@ def _datetime_to_filetime_int(dt: datetime) -> int:
     """
     delta = dt - _EPOCH_1601
     return int(delta.total_seconds() * 10_000_000)
+
+def timestamps_are_close(ts1: datetime, ts2: datetime, delta_us: int = 3) -> bool:
+    """Check if two timestamps are within `delta_ns` microseconds of each other."""
+    diff = abs(ts1 - ts2)
+    return diff <= timedelta(microseconds=delta_us)
 
 
 # ---------------------------------------------------------------------------

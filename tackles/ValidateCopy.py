@@ -23,6 +23,7 @@ import sys
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from common import fs_attrs
 from common.attr_map import (
     CANONICAL_MAP,
     VALID_ATTRS,
@@ -836,6 +837,14 @@ class ValidateCopy(TackleFactory):
         logger.info('Applying attributes to %d entries...', total)
 
         for idx, fe in enumerate(entries, start=1):
+            # Progress logging
+            processed_count = success + skipped + failed
+            if processed_count % progress_interval == 0:
+                pct = (processed_count / total) * 100
+                logger.info(
+                    'Apply progress: %d/%d (%.1f%%) — %d success, %d skipped, %d failed',
+                    processed_count, total, pct, success, skipped, failed
+                )
             # Validate: path exists and has required source data
             errors = fe.validate(source_attrs)
             if errors:
@@ -855,12 +864,14 @@ class ValidateCopy(TackleFactory):
 
             # Extract dates for selection logic
             dates = _extract_dates(fe)
+            fs = FileEntry.from_fs_path(fe.path)
 
             # Apply user's selection and mutate FileEntry
             attrs_to_apply: List[str] = []
             skip_entry = False
             for attr, selector in self.attr_map.items():
                 dt = resolve_selector(dates, selector)
+                
                 if dt is None:
                     logger.warning(
                         'No valid date for attr=%s selector=%s on %s, skipping entry',
@@ -868,8 +879,8 @@ class ValidateCopy(TackleFactory):
                     )
                     skip_entry = True
                     break
-                if getattr(fe, attr) != dt:
-                    setattr(fe, attr, dt)
+                if not fs_attrs.timestamps_are_close(getattr(fs, attr), dt):                    
+                    setattr(fs, attr, dt)
                     attrs_to_apply.append(attr)
 
             if skip_entry or len(attrs_to_apply) == 0:
@@ -882,7 +893,7 @@ class ValidateCopy(TackleFactory):
                 if self.dry_run:
                     intent = "[DRY-RUN] Would set"
                 else:
-                    fe.apply_to_fs(attrs=attrs_to_apply)
+                    fs.apply_to_fs(attrs=attrs_to_apply)
 
                 parts = ', '.join(
                     f'{a}={getattr(fe, a).isoformat()}' for a in attrs_to_apply
@@ -902,15 +913,6 @@ class ValidateCopy(TackleFactory):
             except Exception as exc:
                 logger.error('Unexpected error for %s: %s', fe.path, exc)
                 failed += 1
-            
-            # Progress logging
-            processed_count = success + skipped + failed
-            if processed_count % progress_interval == 0:
-                pct = (processed_count / total) * 100
-                logger.info(
-                    'Apply progress: %d/%d (%.1f%%) — %d success, %d skipped, %d failed',
-                    processed_count, total, pct, success, skipped, failed
-                )
 
         logger.info(
             'Apply complete: %d success, %d skipped, %d failed',
