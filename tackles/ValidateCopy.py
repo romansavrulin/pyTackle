@@ -877,11 +877,14 @@ class ValidateCopy(TackleFactory):
                 continue
 
             if self.dry_run:
-                parts = ', '.join(
-                    f'{a}={getattr(fe, a).isoformat()}' for a in attrs_to_apply
-                )
-                logger.info('[DRY-RUN] Would set %s on %s', parts, fe.path)
-                success += 1
+                if len(attrs_to_apply) > 0
+                    parts = ', '.join(
+                        f'{a}={getattr(fe, a).isoformat()}' for a in attrs_to_apply
+                    )
+                    logger.info('[DRY-RUN] Would set %s on %s', parts, fe.path)
+                    success += 1
+                else:
+                    skipped += 1
                 continue
 
             # Apply timestamps using FileEntry.apply_to_fs()
@@ -896,6 +899,9 @@ class ValidateCopy(TackleFactory):
                 logger.warning('%s — skipping %s', exc, fe.path)
                 skipped += 1
             except OSError as exc:
+                logger.error('Failed for %s: %s', fe.path, exc)
+                failed += 1
+            except fs_attrs.FSNotPersistedError as exc:
                 logger.error('Failed for %s: %s', fe.path, exc)
                 failed += 1
             except Exception as exc:
