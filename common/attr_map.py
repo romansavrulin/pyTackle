@@ -38,18 +38,21 @@ _SELECTOR_ALIASES: dict[str, str] = {'e': 'earliest', 'l': 'latest'}
 
 # ---------------------------------------------------------------------------
 # Canonical column mapping (10 columns, path LAST — column 9)
+#
+# Order: timestamps first, then checksum/entry_type, then ownership/perms,
+# then size, and finally path.
 # ---------------------------------------------------------------------------
 
 CANONICAL_MAP: dict[str, str] = {
-    'size': '0',
-    'creation': '1',
-    'access': '2',
-    'modify': '3',
-    'permissions': '4',
-    'uid': '5',
-    'gid': '6',
-    'checksum': '7',
-    'entry_type': '8',
+    'creation': '0',
+    'access': '1',
+    'modify': '2',
+    'checksum': '3',
+    'entry_type': '4',
+    'permissions': '5',
+    'uid': '6',
+    'gid': '7',
+    'size': '8',
     'path': '9',
 }
 

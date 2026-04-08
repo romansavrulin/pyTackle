@@ -2,10 +2,9 @@
 SetCreationTime tackle — reads a CSV file listing and sets file/directory
 timestamps on the local filesystem.
 
-Supports three listing formats (auto-detected):
-  Format 1: Linux-style, 6 columns, no header
-  Format 2: PowerShell-style, 4 columns, with header
-  Format 3: PowerShell-style with type marker, 5 columns, no header
+Supports two listing formats (auto-detected):
+  Format 1: Canonical, 10 columns — full pyTackle format
+  Format 2: Linux-style, 6 columns — stat output
 
 Cross-platform: Windows (ctypes/Win32), macOS (SetFile), Linux (warning only
 for creation time; access/modify work everywhere via os.utime).
@@ -24,7 +23,7 @@ import sys
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from common.attr_map import parse_attr_map          # noqa: F401 — re-exported
+from common.attr_map import CANONICAL_MAP, parse_attr_map  # noqa: F401 — re-exported
 from common.FileEntry import FileEntry
 from common.fs_attrs import (
     set_creation_time,                               # noqa: F401 — re-exported
@@ -42,14 +41,12 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-FORMAT_LINUX = 'linux'          # Format 1: 6 cols, no header
-FORMAT_PS_HEADER = 'ps_header'  # Format 2: 4 cols, header row
-FORMAT_PS_TYPE = 'ps_type'      # Format 3: 5 cols, no header, type marker
+FORMAT_CANONICAL = 'canonical'  # 10 columns — full pyTackle format
+FORMAT_LINUX = 'linux'          # 6 columns — Linux stat output
 
 # Format-specific attribute maps for FileEntry.from_listing_row()
+# Linux stat output: creation, access, modify, ctime (ignored), entry_type, path
 _ATTR_MAP_LINUX = {'creation': '0', 'access': '1', 'modify': '2', 'entry_type': '4', 'path': '5'}
-_ATTR_MAP_PS_HEADER = {'creation': '0', 'access': '1', 'modify': '2', 'path': '3'}
-_ATTR_MAP_PS_TYPE = {'creation': '0', 'access': '1', 'modify': '2', 'entry_type': '3', 'path': '4'}
 
 
 # ---------------------------------------------------------------------------
@@ -97,25 +94,25 @@ def normalize_path(raw_path: str, script_base_path: Optional[str] = None) -> str
 # ---------------------------------------------------------------------------
 
 def detect_format(first_line: str) -> str:
-    """Return format identifier based on the first line of the listing."""
-    stripped = first_line.strip()
-    if stripped.lower().startswith('creationtimeutc'):
-        return FORMAT_PS_HEADER
-
+    """Return format identifier based on column count.
+    
+    Supported formats:
+    - canonical: 10 columns (full pyTackle format)
+    - linux: 6 columns (Linux stat output)
+    """
     # Parse the first line as CSV to count columns
-    reader = csv.reader(io.StringIO(stripped))
+    reader = csv.reader(io.StringIO(first_line.strip()))
     cols = next(reader, [])
     n = len(cols)
-    if n >= 6:
+
+    if n == 10:
+        return FORMAT_CANONICAL
+    if n == 6:
         return FORMAT_LINUX
-    if n == 5:
-        return FORMAT_PS_TYPE
-    if n == 4:
-        # Could be format 2 without a recognisable header — treat as ps_header data
-        return FORMAT_PS_HEADER
 
     raise ValueError(
-        f'Cannot detect listing format: first line has {n} columns'
+        f'Unsupported listing format: {n} columns. '
+        f'Expected 10 (canonical) or 6 (linux).'
     )
 
 
@@ -132,19 +129,14 @@ def _extract_dates(fe: FileEntry) -> List[datetime]:
     return dates
 
 
+def _parse_row_canonical(cols: List[str]) -> FileEntry:
+    """Canonical format: 10 columns — full pyTackle format."""
+    return FileEntry.from_listing_row(cols, CANONICAL_MAP)
+
+
 def _parse_row_linux(cols: List[str]) -> FileEntry:
-    """Format 1: 6 columns — 4 dates, type, path."""
+    """Linux format: 6 columns — 4 dates, type, path."""
     return FileEntry.from_listing_row(cols, _ATTR_MAP_LINUX)
-
-
-def _parse_row_ps_header(cols: List[str]) -> FileEntry:
-    """Format 2: 4 columns — 3 dates, path (no type)."""
-    return FileEntry.from_listing_row(cols, _ATTR_MAP_PS_HEADER)
-
-
-def _parse_row_ps_type(cols: List[str]) -> FileEntry:
-    """Format 3: 5 columns — 3 dates, type, path."""
-    return FileEntry.from_listing_row(cols, _ATTR_MAP_PS_TYPE)
 
 
 def parse_listing(
@@ -167,27 +159,15 @@ def parse_listing(
         fmt = detect_format(first_line)
         logger.info('Detected listing format: %s', fmt)
 
-        # For format 2 the first line is a header — skip it.
-        # For other formats the first line is data — rewind.
-        if fmt == FORMAT_PS_HEADER:
-            # Check if first line is actually the header
-            if first_line.strip().lower().startswith('creationtimeutc'):
-                lines = fh  # header consumed, read rest
-            else:
-                # No header but detected as ps_header by column count
-                fh.seek(0)
-                lines = fh
-        else:
-            fh.seek(0)
-            lines = fh
+        # First line is data — rewind
+        fh.seek(0)
 
         row_parser = {
+            FORMAT_CANONICAL: _parse_row_canonical,
             FORMAT_LINUX: _parse_row_linux,
-            FORMAT_PS_HEADER: _parse_row_ps_header,
-            FORMAT_PS_TYPE: _parse_row_ps_type,
         }[fmt]
 
-        reader = csv.reader(lines)
+        reader = csv.reader(fh)
         for lineno, cols in enumerate(reader, start=1):
             if not cols or all(c.strip() == '' for c in cols):
                 continue
@@ -259,62 +239,6 @@ def resolve_selector(
 
 
 # ---------------------------------------------------------------------------
-# Entry-type classification
-# ---------------------------------------------------------------------------
-
-def normalize_entry_type(raw: Optional[str]) -> Optional[str]:
-    """Normalize entry type to single-char code: 'f', 'd', or 'l'.
-
-    Accepts various formats from listing files:
-    - 'f', 'F', 'file' → 'f'
-    - 'd', 'D', 'directory' → 'd'
-    - 'l', 'L', 'symlink', 'link' → 'l'
-    """
-    if raw is None:
-        return None
-    raw = raw.strip().lower()
-    if raw in ('f', 'file'):
-        return 'f'
-    if raw in ('d', 'directory'):
-        return 'd'
-    if raw in ('l', 'symlink', 'link'):
-        return 'l'
-    # Unknown format — return as-is (single char) or first char
-    return raw[0] if raw else None
-
-
-def classify_entry(fe: FileEntry, resolved_path: str) -> str:
-    """Return a single-char type code: ``'d'``, ``'f'``, or ``'l'``.
-
-    Symlinks are detected via the filesystem.  If the FileEntry carries a type
-    marker it is used for the file-vs-directory distinction; otherwise the
-    filesystem is consulted.
-    """
-    # Symlinks must be checked first (a symlink to a dir is still a symlink)
-    if os.path.islink(resolved_path):
-        return 'l'
-    if fe.entry_type is not None:
-        normalized = normalize_entry_type(fe.entry_type)
-        if normalized == 'd':
-            return 'd'
-        if normalized == 'l':
-            return 'l'
-        return 'f'
-    # No type column — fall back to filesystem
-    if os.path.isdir(resolved_path):
-        return 'd'
-    return 'f'
-
-
-def is_directory_entry(fe: FileEntry, resolved_path: str) -> bool:
-    """Decide whether *entry* represents a directory.
-
-    Kept for backward compatibility with ``--date-column`` legacy mode.
-    """
-    return classify_entry(fe, resolved_path) == 'd'
-
-
-# ---------------------------------------------------------------------------
 # Listing generation
 # ---------------------------------------------------------------------------
 
@@ -323,7 +247,7 @@ def generate_listing(
     output_path: str,
     allowed_types: set,
 ) -> int:
-    """Walk *base_dir* and write a canonical 9-column CSV listing to *output_path*.
+    """Walk *base_dir* and write a canonical 10-column CSV listing to *output_path*.
 
     Uses :meth:`FileEntry.from_fs_path` to read filesystem attributes and
     :func:`common.listing.write_listing` to serialise the canonical format.
@@ -570,12 +494,11 @@ class SetCreationTime(TackleFactory):
                 failed += 1
                 continue
 
-            # Type filter (path is already resolved in fe.path)
-            etype = classify_entry(fe, fe.path)
-            if etype not in self.allowed_types:
+            # Type filter (entry_type is normalized during parsing)
+            if fe.entry_type not in self.allowed_types:
                 logger.debug(
                     'Skipping %s (type=%s, allowed=%s)',
-                    fe.path, etype, self.allowed_types,
+                    fe.path, fe.entry_type, self.allowed_types,
                 )
                 skipped += 1
                 continue

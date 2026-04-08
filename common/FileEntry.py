@@ -3,6 +3,31 @@
 Provides factory methods for construction from CSV listing rows, md5sum lines,
 and filesystem paths, plus instance methods for attribute access, copying,
 filesystem application, checksum calculation, and validation.
+
+Entry Type Handling
+-------------------
+The ``entry_type`` attribute stores a normalized single-character type code:
+
+- ``'f'`` — regular file
+- ``'d'`` — directory
+- ``'l'`` — symbolic link
+
+Entry types are automatically normalized during CSV parsing via
+:func:`normalize_entry_type`, which accepts various input formats (e.g.,
+``'file'``, ``'F'``, ``'directory'``, ``'D'``, ``'symlink'``).
+
+Module Constants
+----------------
+- :const:`ENTRY_TYPE_FILE` — ``'f'``
+- :const:`ENTRY_TYPE_DIR` — ``'d'``
+- :const:`ENTRY_TYPE_SYMLINK` — ``'l'``
+- :const:`VALID_ENTRY_TYPES` — frozenset of valid type codes
+- :const:`ALL_ATTRS` — tuple of all attribute names (core + metadata)
+
+Public Functions
+----------------
+- :func:`parse_datetime` — Parse datetime strings in ISO, Linux stat, or PowerShell formats
+- :func:`normalize_entry_type` — Normalize entry type to single-char code
 """
 
 from __future__ import annotations
@@ -35,8 +60,8 @@ _INT_ATTRS: frozenset[str] = frozenset(('size', 'uid', 'gid'))
 # Attributes that are datetimes
 _DATETIME_ATTRS: frozenset[str] = frozenset(DATETIME_ATTRS)
 
-# Attributes that are plain strings
-_STR_ATTRS: frozenset[str] = frozenset(('path', 'permissions', 'checksum', 'entry_type'))
+# Attributes that are plain strings (entry_type is handled specially)
+_STR_ATTRS: frozenset[str] = frozenset(('path', 'permissions', 'checksum'))
 
 # Attributes that are not applicable to filesystem writes — silently skipped
 _NON_FS_ATTRS: frozenset[str] = frozenset(('path', 'size', 'checksum', 'entry_type'))
@@ -525,12 +550,39 @@ def parse_datetime(raw: str) -> datetime:
     )
 
 
+def normalize_entry_type(raw: str | None) -> str | None:
+    """Normalize entry type to single-char code: f, d, or l.
+
+    Accepts various formats from listing files:
+    - f, F, file → f
+    - d, D, directory → d
+    - l, L, symlink, link → l
+
+    Returns None if input is None or empty.
+    """
+    if raw is None:
+        return None
+    raw = raw.strip().lower()
+    if not raw:
+        return None
+    if raw in ('f', 'file'):
+        return 'f'
+    if raw in ('d', 'directory'):
+        return 'd'
+    if raw in ('l', 'symlink', 'link'):
+        return 'l'
+    # Unknown format — return first char
+    return raw[0] if raw else None
+
+
 def _parse_value(attr: str, raw: str) -> Any:
     """Parse a raw string *raw* into the appropriate Python type for *attr*."""
     if attr in _INT_ATTRS:
         return int(raw)
     if attr in _DATETIME_ATTRS:
         return parse_datetime(raw)
+    if attr == 'entry_type':
+        return normalize_entry_type(raw)
     # str attrs: path, permissions, checksum
     return raw
 

@@ -31,8 +31,9 @@ class TestConstants:
         # path is now the last column (column 9)
         assert CANONICAL_MAP["path"] == "9"
 
-    def test_entry_type_is_column_8(self):
-        assert CANONICAL_MAP["entry_type"] == "8"
+    def test_entry_type_is_column_4(self):
+        # entry_type is now column 4 (after timestamps and checksum)
+        assert CANONICAL_MAP["entry_type"] == "4"
 
     def test_core_attrs(self):
         assert set(CORE_ATTRS) == {"path", "checksum", "size", "entry_type"}

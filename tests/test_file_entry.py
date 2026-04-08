@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from common.FileEntry import FileEntry, parse_datetime
+from common.FileEntry import FileEntry, parse_datetime, normalize_entry_type
 from common.attr_map import CANONICAL_MAP, CORE_ATTRS, METADATA_ATTRS
 
 
@@ -45,15 +45,15 @@ class TestFromListingRow:
     def test_canonical_attr_map_all_fields(self):
         now = datetime.now(tz=timezone.utc)
         cols = [
-            "1024",                # 0: size
-            now.isoformat(),       # 1: creation
-            now.isoformat(),       # 2: access
-            now.isoformat(),       # 3: modify
-            "0o644",               # 4: permissions
-            "1000",                # 5: uid
-            "1000",                # 6: gid
-            "md5:abcdef1234567890",  # 7: checksum
-            "f",                   # 8: entry_type
+            now.isoformat(),       # 0: creation
+            now.isoformat(),       # 1: access
+            now.isoformat(),       # 2: modify
+            "md5:abcdef1234567890",  # 3: checksum
+            "f",                   # 4: entry_type
+            "0o644",               # 5: permissions
+            "1000",                # 6: uid
+            "1000",                # 7: gid
+            "1024",                # 8: size
             "/tmp/test.txt",       # 9: path
         ]
         entry = FileEntry.from_listing_row(cols, CANONICAL_MAP)
@@ -287,14 +287,14 @@ class TestToListingRow:
         )
         row = entry.to_listing_row(CANONICAL_MAP)
         assert len(row) == 10
-        assert row[8] == "f"  # entry_type
+        assert row[4] == "f"  # entry_type at new position
         assert row[9] == "/tmp/test.txt"  # path is last
 
     def test_path_in_last_position(self):
         entry = FileEntry(path="/tmp/test.txt", entry_type="f")
         row = entry.to_listing_row(CANONICAL_MAP)
         assert row[9] == "/tmp/test.txt"
-        assert row[8] == "f"
+        assert row[4] == "f"  # entry_type at new position
 
 
 # ------------------------------------------------------------------
@@ -481,15 +481,16 @@ class TestParseDatetime:
     def test_from_listing_row_linux_timestamp(self):
         """from_listing_row parses Linux stat-style timestamps via _parse_value."""
         cols = [
-            "1024",                                        # 0: size
-            "2020-08-20 06:15:03.491092220 +0000",         # 1: creation
-            "2020-08-20 06:15:03.491092220 +0000",         # 2: access
-            "2020-08-20 06:15:03.491092220 +0000",         # 3: modify
-            "0o644",                                       # 4: permissions
-            "1000",                                        # 5: uid
-            "1000",                                        # 6: gid
-            "md5:abcdef1234567890",                        # 7: checksum
-            "/tmp/test.txt",                               # 8: path
+            "2020-08-20 06:15:03.491092220 +0000",         # 0: creation
+            "2020-08-20 06:15:03.491092220 +0000",         # 1: access
+            "2020-08-20 06:15:03.491092220 +0000",         # 2: modify
+            "md5:abcdef1234567890",                        # 3: checksum
+            "f",                                           # 4: entry_type
+            "0o644",                                       # 5: permissions
+            "1000",                                        # 6: uid
+            "1000",                                        # 7: gid
+            "1024",                                        # 8: size
+            "/tmp/test.txt",                               # 9: path
         ]
         entry = FileEntry.from_listing_row(cols, CANONICAL_MAP)
         assert entry.creation is not None
@@ -501,15 +502,16 @@ class TestParseDatetime:
     def test_from_listing_row_powershell_timestamp(self):
         """from_listing_row parses PowerShell-style timestamps via _parse_value."""
         cols = [
-            "512",                                         # 0: size
-            "02/24/2023 14:04:32",                         # 1: creation
-            "02/24/2023 14:04:32",                         # 2: access
-            "02/24/2023 14:04:32",                         # 3: modify
-            "0o755",                                       # 4: permissions
-            "0",                                           # 5: uid
-            "0",                                           # 6: gid
-            "",                                            # 7: checksum
-            "/tmp/ps_test.txt",                            # 8: path
+            "02/24/2023 14:04:32",                         # 0: creation
+            "02/24/2023 14:04:32",                         # 1: access
+            "02/24/2023 14:04:32",                         # 2: modify
+            "",                                            # 3: checksum
+            "f",                                           # 4: entry_type
+            "0o755",                                       # 5: permissions
+            "0",                                           # 6: uid
+            "0",                                           # 7: gid
+            "512",                                         # 8: size
+            "/tmp/ps_test.txt",                            # 9: path
         ]
         entry = FileEntry.from_listing_row(cols, CANONICAL_MAP)
         assert entry.creation is not None
@@ -580,3 +582,67 @@ class TestEntryType:
         entry = FileEntry(path=tmp_file, entry_type='f')
         # Should not raise — entry_type is in _NON_FS_ATTRS
         entry.apply_to_fs(['entry_type'])
+
+
+# ------------------------------------------------------------------
+# normalize_entry_type
+# ------------------------------------------------------------------
+
+class TestNormalizeEntryType:
+    """Tests for the normalize_entry_type() function."""
+
+    def test_file_variants(self):
+        """All file-type variants normalize to 'f'."""
+        assert normalize_entry_type('f') == 'f'
+        assert normalize_entry_type('F') == 'f'
+        assert normalize_entry_type('file') == 'f'
+        assert normalize_entry_type('FILE') == 'f'
+
+    def test_directory_variants(self):
+        """All directory-type variants normalize to 'd'."""
+        assert normalize_entry_type('d') == 'd'
+        assert normalize_entry_type('D') == 'd'
+        assert normalize_entry_type('directory') == 'd'
+        assert normalize_entry_type('DIRECTORY') == 'd'
+
+    def test_symlink_variants(self):
+        """All symlink-type variants normalize to 'l'."""
+        assert normalize_entry_type('l') == 'l'
+        assert normalize_entry_type('L') == 'l'
+        assert normalize_entry_type('symlink') == 'l'
+        assert normalize_entry_type('SYMLINK') == 'l'
+        assert normalize_entry_type('link') == 'l'
+        assert normalize_entry_type('LINK') == 'l'
+
+    def test_none_returns_none(self):
+        """None input returns None."""
+        assert normalize_entry_type(None) is None
+
+    def test_empty_returns_none(self):
+        """Empty or whitespace-only strings return None."""
+        assert normalize_entry_type('') is None
+        assert normalize_entry_type('  ') is None
+
+    def test_unknown_returns_first_char(self):
+        """Unknown values return the first character lowercased."""
+        assert normalize_entry_type('block') == 'b'
+        assert normalize_entry_type('character') == 'c'
+
+    def test_from_listing_row_normalizes_entry_type(self):
+        """from_listing_row normalizes entry_type during parsing."""
+        attr_map = {'path': '0', 'entry_type': '1'}
+        
+        # 'directory' in listing → 'd' in FileEntry
+        cols = ['./mydir', 'directory']
+        fe = FileEntry.from_listing_row(cols, attr_map)
+        assert fe.entry_type == 'd'
+        
+        # 'FILE' in listing → 'f' in FileEntry
+        cols = ['./myfile', 'FILE']
+        fe = FileEntry.from_listing_row(cols, attr_map)
+        assert fe.entry_type == 'f'
+        
+        # 'symlink' in listing → 'l' in FileEntry
+        cols = ['./mylink', 'symlink']
+        fe = FileEntry.from_listing_row(cols, attr_map)
+        assert fe.entry_type == 'l'
