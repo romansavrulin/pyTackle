@@ -296,6 +296,39 @@ class TestToListingRow:
         assert row[9] == "/tmp/test.txt"
         assert row[4] == "f"  # entry_type at new position
 
+    def test_datetime_zero_microseconds_includes_fractional(self):
+        """Datetime with zero microseconds should output .000000."""
+        dt_zero = datetime(2019, 6, 10, 8, 34, 49, 0, tzinfo=timezone.utc)
+        entry = FileEntry(
+            path="/tmp/test.txt", creation=dt_zero, access=dt_zero, modify=dt_zero,
+        )
+        row = entry.to_listing_row(CANONICAL_MAP)
+        # All three datetime columns should have .000000
+        assert row[0] == "2019-06-10T08:34:49.000000+00:00"  # creation
+        assert row[1] == "2019-06-10T08:34:49.000000+00:00"  # access
+        assert row[2] == "2019-06-10T08:34:49.000000+00:00"  # modify
+
+    def test_datetime_nonzero_microseconds_preserved(self):
+        """Datetime with non-zero microseconds should preserve them."""
+        dt_micro = datetime(2025, 4, 23, 9, 7, 1, 831773, tzinfo=timezone.utc)
+        entry = FileEntry(
+            path="/tmp/test.txt", creation=dt_micro,
+        )
+        row = entry.to_listing_row(CANONICAL_MAP)
+        assert row[0] == "2025-04-23T09:07:01.831773+00:00"
+
+    def test_datetime_consistent_format_length(self):
+        """All datetime outputs should have consistent length (with microseconds)."""
+        dt_zero = datetime(2020, 1, 1, 0, 0, 0, 0, tzinfo=timezone.utc)
+        dt_micro = datetime(2020, 1, 1, 0, 0, 0, 123456, tzinfo=timezone.utc)
+        entry_zero = FileEntry(path="/a", creation=dt_zero)
+        entry_micro = FileEntry(path="/b", creation=dt_micro)
+        row_zero = entry_zero.to_listing_row(CANONICAL_MAP)
+        row_micro = entry_micro.to_listing_row(CANONICAL_MAP)
+        # Both should have same length (32 chars for ISO with microseconds and +00:00)
+        assert len(row_zero[0]) == len(row_micro[0])
+        assert ".000000" in row_zero[0]
+
 
 # ------------------------------------------------------------------
 # Round-trip: to_listing_row ↔ from_listing_row

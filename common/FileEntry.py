@@ -592,7 +592,8 @@ def _format_value(value: Any) -> str:
     if value is None:
         return ''
     if isinstance(value, datetime):
-        return value.isoformat()
+        # Always include microseconds (6 digits) for consistent output
+        return value.isoformat(timespec='microseconds')
     if isinstance(value, int):
         return str(value)
     return str(value)
