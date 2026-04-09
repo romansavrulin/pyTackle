@@ -367,14 +367,16 @@ def generate_listing(
                     )
                 try:
                     entry.calculate_checksum(algorithm=checksum_algorithm)
-                    # Store relative path from base_dir (after checksum calculation)
-                    entry.path = os.path.relpath(entry.path, base)
-
                 except OSError as exc:
                     logger.warning(
                         'Cannot calculate checksum for %s: %s',
                         entry.path, exc,
                     )
+
+    # Convert all paths to relative (after checksum calculation which needs full paths)
+    for entry in entries:
+        entry.path = os.path.relpath(entry.path, base)
+
     return write_listing(output_path, entries)
 
 
