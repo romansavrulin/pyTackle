@@ -39,17 +39,20 @@ class FSNotPersistedError(RuntimeError):
 # Reading attributes
 # ---------------------------------------------------------------------------
 
-def _stat_creation_time(st: os.stat_result) -> datetime:
+def _stat_creation_time(st: os.stat_result) -> datetime | None:
     """Extract creation time from a stat result as a TZ-aware UTC datetime.
 
-    On macOS/Windows ``st_birthtime`` is available.  On Linux falls back to
-    ``st_ctime`` (metadata-change time — the closest available proxy).
+    Returns None on Linux where creation time is not supported.
+    macOS and BSD have st_birthtime, Python 3.12+ may have st_birthtime_ns.
     """
-    try:
-        ts = st.st_birthtime
-    except AttributeError:
-        ts = st.st_birthtime_ns
-    return datetime.fromtimestamp(ts, tz=timezone.utc)
+    # macOS and BSD have st_birthtime
+    if hasattr(st, 'st_birthtime'):
+        return datetime.fromtimestamp(st.st_birthtime, tz=timezone.utc)
+    # Python 3.12+ may have st_birthtime_ns on some platforms
+    if hasattr(st, 'st_birthtime_ns'):
+        return datetime.fromtimestamp(st.st_birthtime_ns / 1e9, tz=timezone.utc)
+    # Linux doesn't support creation time at the OS level
+    return None
 
 
 def _detect_entry_type(path: str, st: os.stat_result) -> str:
