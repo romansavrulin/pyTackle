@@ -345,8 +345,9 @@ def generate_listing(
     entries = _collect_entries()
     # Calculate checksum for files if requested (before changing path!)
     logger.info(f"Collected {len(entries)} entries")
-    logger.info(f"Calculating checksums...")
+
     if calculate_checksum:
+        logger.info(f"Calculating checksums...")
         total_lines = len(entries)
         progress_interval = total_lines / 1000
         if progress_interval < 1:
