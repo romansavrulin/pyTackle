@@ -467,18 +467,24 @@ class MediaIntegrityCheck(TackleFactory):
 
         # 5. Summary
         logger.info('=' * 60)
-        logger.info('Validation complete')
-        if ok_count:
-            logger.info('  Valid:        %d files -> %s', ok_count, ok_path)
-        if broken_count:
-            logger.info('  Corrupt:      %d files -> %s', broken_count, broken_path)
-        if untestable_count:
-            logger.info('  Untestable:   %d files -> %s', untestable_count, untestable_path)
-        if missing_tool_count:
-            logger.info('  Missing tool: %d files -> %s', missing_tool_count, missing_tool_path)
-        if error_count:
-            logger.info('  Tool error:   %d files -> %s', error_count, error_path)
+        logger.info('Validation complete:')
+        logger.info('  Valid:        %d', len(valid_entries))
+        logger.info('  Corrupt:      %d', len(corrupt_entries))
+        logger.info('  Untestable:   %d', len(untestable_entries))
+        logger.info('  Missing tool: %d', len(missing_tool_entries))
+        logger.info('  Errors:       %d', len(error_entries))
         logger.info('=' * 60)
+        # Output file paths
+        if ok_count:
+            logger.info('  Output: %s', ok_path)
+        if broken_count:
+            logger.info('  Output: %s', broken_path)
+        if untestable_count:
+            logger.info('  Output: %s', untestable_path)
+        if missing_tool_count:
+            logger.info('  Output: %s', missing_tool_path)
+        if error_count:
+            logger.info('  Output: %s', error_path)
 
         # Return 1 if any corrupt files found, 0 otherwise
         return 1 if broken_count > 0 else 0
@@ -527,7 +533,7 @@ class MediaIntegrityCheck(TackleFactory):
     def _validate_entries(self, entries: List[FileEntry]) -> List[ValidationOutcome]:
         """Validate all entries and return outcomes.
         
-        Shows progress every 10 seconds.
+        Shows progress every 10 seconds with category statistics.
         """
         outcomes: List[ValidationOutcome] = []
         total = len(entries)
@@ -535,20 +541,33 @@ class MediaIntegrityCheck(TackleFactory):
         last_progress = time.monotonic()
         progress_interval = 10  # seconds
 
+        # Category counters
+        counts = {
+            ValidationResult.VALID: 0,
+            ValidationResult.CORRUPT: 0,
+            ValidationResult.UNTESTABLE: 0,
+            ValidationResult.TOOL_MISSING: 0,
+            ValidationResult.TOOL_ERROR: 0,
+        }
+
         for entry in entries:
             outcome = self._validate_single(entry)
             outcomes.append(outcome)
+            counts[outcome.result] += 1
             processed += 1
 
-            # Time-based progress
+            # Time-based progress with stats
             now = time.monotonic()
             if now - last_progress >= progress_interval:
                 pct = (processed / total) * 100
-                valid_count = sum(1 for o in outcomes if o.result == ValidationResult.VALID)
-                corrupt_count = sum(1 for o in outcomes if o.result == ValidationResult.CORRUPT)
                 logger.info(
-                    'Progress: %d/%d (%.1f%%) — %d valid, %d corrupt',
-                    processed, total, pct, valid_count, corrupt_count
+                    'Progress: %d/%d (%.1f%%) | OK: %d | Broken: %d | Untestable: %d | Missing tool: %d | Errors: %d',
+                    processed, total, pct,
+                    counts[ValidationResult.VALID],
+                    counts[ValidationResult.CORRUPT],
+                    counts[ValidationResult.UNTESTABLE],
+                    counts[ValidationResult.TOOL_MISSING],
+                    counts[ValidationResult.TOOL_ERROR],
                 )
                 last_progress = now
 
