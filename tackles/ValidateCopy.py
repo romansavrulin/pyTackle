@@ -571,7 +571,7 @@ class ValidateCopy(TackleFactory):
 
         # Handle --attrs for generate mode
         # Default: include checksum for files (checksum ON by default)
-        self.calculate_checksum: bool = True
+        self.calculate_checksum: bool = False
 
         if options.attrs is not None:
             # Parse attrs to see if checksum is included
