@@ -474,6 +474,15 @@ class MediaIntegrityCheck(TackleFactory):
                  'pedantic: full content decode/verification (slowest)',
         )
 
+        # Verbose mode
+        subparser.add_argument(
+            '-v', '--verbose',
+            action='store_true',
+            default=False,
+            help='Enable verbose logging: show file details, tool used, stdout/stderr output, '
+                 'check level policy, and return codes for each file'
+        )
+
     def __init__(self, parser):
         super().__init__(parser)
         options, _ = parser.parse_known_args()
@@ -488,6 +497,7 @@ class MediaIntegrityCheck(TackleFactory):
         self.install_cmd: bool = options.install_cmd
         self.timeout: int = options.timeout
         self.check_level: CheckLevel = CheckLevel(options.check_level)
+        self.verbose: bool = options.verbose
 
         # Parse extensions filter
         if options.extensions:
@@ -530,6 +540,7 @@ class MediaIntegrityCheck(TackleFactory):
         logger.info('Output base: %s', self.output_base)
         logger.info('Timeout: %d seconds', self.timeout)
         logger.info('Check level: %s', self.check_level.value)
+        logger.info('Verbose mode: %s', 'enabled' if self.verbose else 'disabled')
         if self.allowed_extensions:
             logger.info('Extensions filter: %s', ', '.join(sorted(self.allowed_extensions)))
         else:
@@ -722,6 +733,14 @@ class MediaIntegrityCheck(TackleFactory):
 
         return outcomes
 
+    def _format_size(self, size: int) -> str:
+        """Format file size in human-readable form."""
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size < 1024:
+                return f"{size:.1f}{unit}"
+            size /= 1024
+        return f"{size:.1f}PB"
+
     def _validate_single(self, entry: FileEntry) -> ValidationOutcome:
         """Validate a single file entry.
         
@@ -734,15 +753,35 @@ class MediaIntegrityCheck(TackleFactory):
         - PEDANTIC: Full decode/verification using alternative binary if configured
         """
         ext = get_extension(entry.path)
+
+        # 1. Log file info
+        if self.verbose:
+            logger.debug(
+                'Processing: %s (size=%s, ext=%s)',
+                entry.path,
+                self._format_size(entry.size) if entry.size else 'unknown',
+                ext or 'none'
+            )
+
         config = get_tool_config(ext)
 
         # No validator for this extension
         if config is None:
+            if self.verbose:
+                logger.debug('  Decision: UNTESTABLE - no validator for extension')
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.UNTESTABLE,
                 error_message='No validator defined for this file extension',
             )
+
+        # 2. Log tool info
+        if self.verbose:
+            logger.debug(
+                '  Tool: %s (package: %s)',
+                config.binary, config.apt_package
+            )
+            logger.debug('  Check level: %s', self.check_level.value)
 
         # Determine binary and args based on check level
         if self.check_level == CheckLevel.PEDANTIC and config.pedantic_binary:
@@ -750,6 +789,8 @@ class MediaIntegrityCheck(TackleFactory):
             args_before = list(config.pedantic_args or ())
             # Special handling for ffmpeg: need to add -f null - after file
             is_ffmpeg_pedantic = (binary == 'ffmpeg')
+            if self.verbose:
+                logger.debug('  Using pedantic binary: %s', binary)
         else:
             binary = config.binary
             args_before = list(config.args)
@@ -757,6 +798,8 @@ class MediaIntegrityCheck(TackleFactory):
 
         # Check if tool is available
         if not check_tool_available(binary):
+            if self.verbose:
+                logger.debug('  Decision: TOOL_MISSING - %s not installed', binary)
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_MISSING,
@@ -771,6 +814,9 @@ class MediaIntegrityCheck(TackleFactory):
         else:
             cmd = [binary] + args_before + [entry.path] + list(config.args_after_file)
 
+        if self.verbose:
+            logger.debug('  Command: %s', ' '.join(cmd))
+
         try:
             result = subprocess.run(
                 cmd,
@@ -778,27 +824,9 @@ class MediaIntegrityCheck(TackleFactory):
                 timeout=self.timeout,
                 text=True,
             )
-
-            exit_code = result.returncode
-            stderr = result.stderr[:500] if result.stderr else None
-
-            # Check for success based on exit code
-            is_valid = exit_code in config.success_codes
-
-            # Check stderr patterns (for DEFAULT and PEDANTIC levels)
-            if is_valid and self.check_level != CheckLevel.BASIC and config.check_stderr:
-                if result.stderr and re.search(config.check_stderr, result.stderr):
-                    is_valid = False
-
-            return ValidationOutcome(
-                entry=entry,
-                result=ValidationResult.VALID if is_valid else ValidationResult.CORRUPT,
-                tool=binary,
-                exit_code=exit_code,
-                stderr_snippet=stderr,
-            )
-
         except subprocess.TimeoutExpired:
+            if self.verbose:
+                logger.debug('  Decision: TOOL_ERROR - timeout after %ds', self.timeout)
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_ERROR,
@@ -806,6 +834,8 @@ class MediaIntegrityCheck(TackleFactory):
                 error_message=f'Validation timed out after {self.timeout}s',
             )
         except OSError as exc:
+            if self.verbose:
+                logger.debug('  Decision: TOOL_ERROR - %s', exc)
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_ERROR,
@@ -813,12 +843,75 @@ class MediaIntegrityCheck(TackleFactory):
                 error_message=str(exc),
             )
         except Exception as exc:
+            if self.verbose:
+                logger.debug('  Decision: TOOL_ERROR - unexpected: %s', exc)
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_ERROR,
                 tool=binary,
                 error_message=f'Unexpected error: {exc}',
             )
+
+        exit_code = result.returncode
+        stderr = result.stderr[:500] if result.stderr else None
+
+        # 3. Log stdout/stderr
+        if self.verbose:
+            logger.debug('  Return code: %d', result.returncode)
+            if result.stdout.strip():
+                # Truncate long output
+                stdout = result.stdout.strip()[:500]
+                logger.debug('  stdout: %s', stdout)
+            if result.stderr.strip():
+                stderr_log = result.stderr.strip()[:500]
+                logger.debug('  stderr: %s', stderr_log)
+
+        # Check for success based on exit code
+        is_valid = exit_code in config.success_codes
+
+        # 4. Log decision policy
+        if not is_valid:
+            if self.verbose:
+                logger.debug(
+                    '  Decision: CORRUPT - exit code %d not in success codes %s',
+                    result.returncode, config.success_codes
+                )
+            return ValidationOutcome(
+                entry=entry,
+                result=ValidationResult.CORRUPT,
+                tool=binary,
+                exit_code=exit_code,
+                stderr_snippet=stderr,
+            )
+
+        # Check stderr patterns (for DEFAULT and PEDANTIC levels)
+        if self.check_level != CheckLevel.BASIC and config.check_stderr:
+            if result.stderr and re.search(config.check_stderr, result.stderr):
+                if self.verbose:
+                    logger.debug(
+                        '  Decision: CORRUPT - stderr matched pattern %r',
+                        config.check_stderr
+                    )
+                return ValidationOutcome(
+                    entry=entry,
+                    result=ValidationResult.CORRUPT,
+                    tool=binary,
+                    exit_code=exit_code,
+                    stderr_snippet=stderr,
+                )
+            elif self.verbose:
+                logger.debug('  Stderr pattern check: no match (OK)')
+
+        if self.verbose:
+            logger.debug('  Decision: VALID')
+
+        return ValidationOutcome(
+            entry=entry,
+            result=ValidationResult.VALID,
+            tool=binary,
+            exit_code=exit_code,
+            stderr_snippet=stderr,
+        )
 
     def list_available_tools(self) -> str:
         """Format table with columns: Extension, Tool, Package, Installed, Install Command.

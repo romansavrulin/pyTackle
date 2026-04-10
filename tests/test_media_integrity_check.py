@@ -460,6 +460,7 @@ class TestValidateSingleMocked:
         mock = MagicMock(spec=MediaIntegrityCheck)
         mock.timeout = 300
         mock.check_level = CheckLevel.DEFAULT
+        mock.verbose = False
         mock._validate_single = MediaIntegrityCheck._validate_single
         return mock
 
@@ -569,6 +570,7 @@ class TestOggOpusStderrDetection:
         mock = MagicMock(spec=MediaIntegrityCheck)
         mock.timeout = 300
         mock.check_level = CheckLevel.DEFAULT
+        mock.verbose = False
         mock._validate_single = MediaIntegrityCheck._validate_single
         return mock
 
@@ -635,6 +637,7 @@ class TestQpdfSpecialExitCode:
         mock = MagicMock(spec=MediaIntegrityCheck)
         mock.timeout = 300
         mock.check_level = CheckLevel.DEFAULT
+        mock.verbose = False
         mock._validate_single = MediaIntegrityCheck._validate_single
         return mock
 
@@ -1250,6 +1253,7 @@ class TestValidationWithLevels:
         mock = MagicMock(spec=MediaIntegrityCheck)
         mock.timeout = 300
         mock.check_level = CheckLevel.BASIC
+        mock.verbose = False
         mock._validate_single = MediaIntegrityCheck._validate_single
         return mock
 
@@ -1261,6 +1265,7 @@ class TestValidationWithLevels:
         mock = MagicMock(spec=MediaIntegrityCheck)
         mock.timeout = 300
         mock.check_level = CheckLevel.DEFAULT
+        mock.verbose = False
         mock._validate_single = MediaIntegrityCheck._validate_single
         return mock
 
@@ -1272,6 +1277,7 @@ class TestValidationWithLevels:
         mock = MagicMock(spec=MediaIntegrityCheck)
         mock.timeout = 300
         mock.check_level = CheckLevel.PEDANTIC
+        mock.verbose = False
         mock._validate_single = MediaIntegrityCheck._validate_single
         return mock
 

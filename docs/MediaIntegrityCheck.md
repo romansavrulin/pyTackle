@@ -103,6 +103,7 @@ pyTackle MediaIntegrityCheck [OPTIONS] DIRECTORY
 | `--extensions EXT[,EXT,...]` | Filter which file extensions to check. Only files matching these extensions will be scanned. Example: `--extensions mp4,mp3,jpg` |
 | `--timeout SECONDS` | Per-file validation timeout in seconds (default: 300) |
 | `--check-level` | Validation level: basic, default, or pedantic (default: `default`) |
+| `-v, --verbose` | Enable verbose logging for debugging (flag, default: False) |
 
 ## Validation Levels
 
@@ -129,6 +130,49 @@ For video/audio files, uses full decode instead of container validation:
 - Decodes every frame/sample to detect mid-file corruption
 - Uses hardware acceleration when available (2-10x faster)
 - Much slower than other levels - processes entire file content
+
+## Verbose Mode
+
+Use `-v` or `--verbose` to enable detailed logging output for debugging and tracing validation decisions.
+
+### What Verbose Mode Shows
+
+For each file processed:
+- **File info**: Path, size (human-readable), extension
+- **Tool selection**: Which validator tool is being used and its package
+- **Check level policy**: The validation level being applied
+- **Command executed**: The full command line
+- **Tool output**: stdout and stderr (truncated to 500 chars)
+- **Return code**: The exit code from the tool
+- **Decision reasoning**: Why the file was marked as valid, corrupt, etc.
+
+### Example Output
+
+```
+DEBUG - Processing: videos/test.mp4 (size=15.2MB, ext=mp4)
+DEBUG -   Tool: ffprobe (package: ffmpeg)
+DEBUG -   Check level: default
+DEBUG -   Command: ffprobe -v error -i /media/videos/test.mp4
+DEBUG -   Return code: 0
+DEBUG -   stderr: [warning] Header missing
+DEBUG -   Decision: CORRUPT - stderr matched pattern '(?i)(error|invalid|corrupt|moov atom not found)'
+```
+
+### Usage Example
+
+```bash
+# Enable verbose output
+pyTackle MediaIntegrityCheck /media/library -o results -v
+
+# Combine with other options
+pyTackle MediaIntegrityCheck /media/videos --check-level pedantic --verbose
+```
+
+### Notes
+
+- Verbose mode uses DEBUG log level
+- Output goes to stderr
+- Useful for troubleshooting validation issues or understanding tool behavior
 
 ## Output Files
 
