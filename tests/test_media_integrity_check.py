@@ -1460,3 +1460,107 @@ class TestStderrPatternMatching:
         assert re.search(pattern, 'error')
         assert re.search(pattern, 'Error')
         assert re.search(pattern, 'ERROR')
+
+
+# ===========================================================================
+# 18. New Extension Tests (8 new extensions)
+# ===========================================================================
+
+
+class TestNewExtensions:
+    """Tests to verify new extensions are in TOOL_REGISTRY."""
+
+    @pytest.mark.parametrize('ext', ['lrv', 'thm', 'insv', 'rtf', 'doc', 'fb2', '360', 'djvu'])
+    def test_extension_in_registry(self, ext):
+        """Each new extension should be in TOOL_REGISTRY."""
+        assert f'.{ext}' in TOOL_REGISTRY
+
+
+class TestNewExtensionConfigs:
+    """Tests to verify correct tool configuration for new extensions."""
+
+    def test_lrv_uses_ffprobe(self):
+        """GoPro proxy video (.lrv) should use ffprobe with pedantic ffmpeg."""
+        config = get_tool_config('.lrv')
+        assert config is not None
+        assert config.binary == 'ffprobe'
+        assert config.pedantic_binary == 'ffmpeg'
+
+    def test_thm_uses_jpeginfo(self):
+        """Thumbnail JPEG (.thm) should use jpeginfo."""
+        config = get_tool_config('.thm')
+        assert config is not None
+        assert config.binary == 'jpeginfo'
+
+    def test_insv_uses_ffprobe(self):
+        """Insta360 video (.insv) should use ffprobe with stderr check."""
+        config = get_tool_config('.insv')
+        assert config is not None
+        assert config.binary == 'ffprobe'
+        assert config.check_stderr is not None
+
+    def test_rtf_uses_unrtf(self):
+        """Rich Text Format (.rtf) should use unrtf."""
+        config = get_tool_config('.rtf')
+        assert config is not None
+        assert config.binary == 'unrtf'
+        assert config.apt_package == 'unrtf'
+
+    def test_doc_uses_antiword(self):
+        """Old Word binary (.doc) should use antiword."""
+        config = get_tool_config('.doc')
+        assert config is not None
+        assert config.binary == 'antiword'
+        assert config.apt_package == 'antiword'
+
+    def test_fb2_uses_xmllint(self):
+        """FictionBook ebook (.fb2) should use xmllint."""
+        config = get_tool_config('.fb2')
+        assert config is not None
+        assert config.binary == 'xmllint'
+        assert config.apt_package == 'libxml2-utils'
+
+    def test_360_uses_ffprobe(self):
+        """360-degree video (.360) should use ffprobe with pedantic ffmpeg."""
+        config = get_tool_config('.360')
+        assert config is not None
+        assert config.binary == 'ffprobe'
+        assert config.pedantic_binary == 'ffmpeg'
+
+    def test_djvu_uses_ddjvu(self):
+        """DjVu document (.djvu) should use ddjvu."""
+        config = get_tool_config('.djvu')
+        assert config is not None
+        assert config.binary == 'ddjvu'
+        assert config.apt_package == 'djvulibre-bin'
+
+
+class TestArgsAfterFile:
+    """Tests for args_after_file field in tool configurations."""
+
+    def test_djvu_has_args_after_file(self):
+        """ddjvu needs output file after input file."""
+        config = get_tool_config('.djvu')
+        assert config is not None
+        assert hasattr(config, 'args_after_file')
+        assert '/dev/null' in config.args_after_file
+
+    def test_most_tools_have_empty_args_after_file(self):
+        """Most tools don't need args after file."""
+        for ext in ['.mp4', '.jpg', '.pdf', '.zip']:
+            config = get_tool_config(ext)
+            assert config is not None
+            assert config.args_after_file == ()
+
+
+class TestNewVideoExtensionsPedantic:
+    """Tests for pedantic mode on new video extensions."""
+
+    @pytest.mark.parametrize('ext', ['.lrv', '.insv', '.360'])
+    def test_video_has_pedantic_ffmpeg(self, ext):
+        """New video extensions should have pedantic_binary=ffmpeg."""
+        config = get_tool_config(ext)
+        assert config is not None
+        assert config.pedantic_binary == 'ffmpeg'
+        assert config.pedantic_args is not None
+        assert '-hwaccel' in config.pedantic_args

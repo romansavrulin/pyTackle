@@ -52,7 +52,13 @@ MediaIntegrityCheck uses external validation tools. Install them via apt:
 Install all supported tools at once:
 
 ```bash
-sudo apt-get install ffmpeg mp3val flac vorbis-tools opus-tools jpeginfo pngcheck imagemagick libimage-exiftool-perl unzip tar gzip bzip2 xz-utils lz4 zstd p7zip-full unrar qpdf epubcheck
+# Complete installation command
+apt-get install -y \
+    ffmpeg mp3val flac vorbis-tools opus-tools \
+    jpeginfo pngcheck imagemagick libimage-exiftool-perl \
+    unzip gzip bzip2 xz-utils lz4 zstd p7zip-full unrar \
+    poppler-utils qpdf epubcheck \
+    unrtf antiword libxml2-utils djvulibre-bin
 ```
 
 ### Check Tool Availability
@@ -162,66 +168,95 @@ Output files use the canonical 10-column CSV format (no header row):
 
 ## Supported Formats
 
-### Video
+### Video Formats
+| Extension | Tool | Package | Testability | Notes |
+|-----------|------|---------|-------------|-------|
+| .mp4 | ffprobe | ffmpeg | ✅ Full | Standard MPEG-4 container |
+| .mkv | ffprobe | ffmpeg | ✅ Full | Matroska container |
+| .avi | ffprobe | ffmpeg | ✅ Full | AVI container |
+| .mov | ffprobe | ffmpeg | ✅ Full | QuickTime container |
+| .wmv | ffprobe | ffmpeg | ✅ Full | Windows Media Video |
+| .flv | ffprobe | ffmpeg | ✅ Full | Flash Video |
+| .webm | ffprobe | ffmpeg | ✅ Full | WebM container |
+| .m4v | ffprobe | ffmpeg | ✅ Full | MPEG-4 Video |
+| .mpeg/.mpg | ffprobe | ffmpeg | ✅ Full | MPEG video |
+| .3gp | ffprobe | ffmpeg | ✅ Full | 3GPP multimedia |
+| .ts/.m2ts | ffprobe | ffmpeg | ✅ Full | MPEG transport stream |
+| .vob | ffprobe | ffmpeg | ✅ Full | DVD Video Object |
+| .lrv | ffprobe | ffmpeg | ✅ Full | GoPro proxy video |
+| .360 | ffprobe | ffmpeg | ✅ Full | 360-degree video |
+| .insv | ffprobe | ffmpeg | ⚠️ Partial | Insta360 proprietary format |
 
-| Extension | Tool | Package |
-|-----------|------|---------|
-| `.mp4`, `.mkv`, `.avi`, `.mov` | ffprobe | ffmpeg |
-| `.wmv`, `.flv`, `.webm`, `.m4v` | ffprobe | ffmpeg |
-| `.mpeg`, `.mpg`, `.3gp` | ffprobe | ffmpeg |
-| `.ts`, `.m2ts`, `.vob` | ffprobe | ffmpeg |
+### Audio Formats
+| Extension | Tool | Package | Testability | Notes |
+|-----------|------|---------|-------------|-------|
+| .mp3 | mp3val | mp3val | ✅ Full | MPEG Audio Layer III |
+| .flac | flac | flac | ✅ Full | Free Lossless Audio Codec |
+| .ogg | ogginfo | vorbis-tools | ✅ Full | Ogg Vorbis |
+| .opus | opusinfo | opus-tools | ✅ Full | Opus audio |
+| .wav | ffprobe | ffmpeg | ✅ Full | Waveform Audio |
+| .aac | ffprobe | ffmpeg | ✅ Full | Advanced Audio Coding |
+| .m4a | ffprobe | ffmpeg | ✅ Full | MPEG-4 Audio |
+| .wma | ffprobe | ffmpeg | ✅ Full | Windows Media Audio |
+| .aiff | ffprobe | ffmpeg | ✅ Full | Audio Interchange Format |
+| .ape | ffprobe | ffmpeg | ✅ Full | Monkey's Audio |
 
-### Audio
+### Image Formats
+| Extension | Tool | Package | Testability | Notes |
+|-----------|------|---------|-------------|-------|
+| .jpg/.jpeg | jpeginfo | jpeginfo | ✅ Full | JPEG image |
+| .png | pngcheck | pngcheck | ✅ Full | PNG image |
+| .gif | identify | imagemagick | ✅ Full | GIF image |
+| .bmp | identify | imagemagick | ✅ Full | Bitmap image |
+| .tiff/.tif | identify | imagemagick | ✅ Full | Tagged Image File Format |
+| .webp | identify | imagemagick | ✅ Full | WebP image |
+| .heic | identify | imagemagick | ✅ Full | HEIF container |
+| .thm | jpeginfo | jpeginfo | ✅ Full | Thumbnail (JPEG) |
+| .cr2 | exiftool | libimage-exiftool-perl | ⚠️ Partial | Canon RAW (metadata only) |
+| .nef | exiftool | libimage-exiftool-perl | ⚠️ Partial | Nikon RAW (metadata only) |
+| .arw | exiftool | libimage-exiftool-perl | ⚠️ Partial | Sony RAW (metadata only) |
+| .raw | exiftool | libimage-exiftool-perl | ⚠️ Partial | Generic RAW (metadata only) |
+| .dng | exiftool | libimage-exiftool-perl | ⚠️ Partial | Digital Negative (metadata only) |
 
-| Extension | Tool | Package |
-|-----------|------|---------|
-| `.mp3` | mp3val | mp3val |
-| `.flac` | flac | flac |
-| `.ogg` | ogginfo | vorbis-tools |
-| `.opus` | opusinfo | opus-tools |
-| `.wav`, `.aac`, `.m4a` | ffprobe | ffmpeg |
-| `.wma`, `.aiff`, `.ape` | ffprobe | ffmpeg |
+### Archive Formats
+| Extension | Tool | Package | Testability | Notes |
+|-----------|------|---------|-------------|-------|
+| .zip | unzip | unzip | ✅ Full | ZIP archive |
+| .tar | tar | tar | ✅ Full | TAR archive |
+| .tar.gz/.tgz | tar | tar | ✅ Full | Gzipped TAR |
+| .tar.bz2 | tar | tar | ✅ Full | Bzip2 TAR |
+| .tar.xz | tar | tar | ✅ Full | XZ TAR |
+| .gz | gzip | gzip | ✅ Full | Gzip compressed |
+| .bz2 | bzip2 | bzip2 | ✅ Full | Bzip2 compressed |
+| .xz | xz | xz-utils | ✅ Full | XZ compressed |
+| .lz4 | lz4 | lz4 | ✅ Full | LZ4 compressed |
+| .zst/.zstd | zstd | zstd | ✅ Full | Zstandard compressed |
+| .7z | 7z | p7zip-full | ✅ Full | 7-Zip archive |
+| .rar | unrar | unrar | ✅ Full | RAR archive |
 
-### Image
+### Document Formats
+| Extension | Tool | Package | Testability | Notes |
+|-----------|------|---------|-------------|-------|
+| .pdf | qpdf | qpdf | ✅ Full | PDF document |
+| .epub | epubcheck | epubcheck | ✅ Full | EPUB ebook |
+| .docx | unzip | unzip | ✅ Full | Office Open XML document |
+| .xlsx | unzip | unzip | ✅ Full | Office Open XML spreadsheet |
+| .pptx | unzip | unzip | ✅ Full | Office Open XML presentation |
+| .doc | antiword | antiword | ✅ Full | Legacy Word document |
+| .rtf | unrtf | unrtf | ⚠️ Partial | Rich Text Format |
+| .fb2 | xmllint | libxml2-utils | ✅ Full | FictionBook ebook (XML) |
+| .djvu | ddjvu | djvulibre-bin | ✅ Full | DjVu document |
 
-| Extension | Tool | Package |
-|-----------|------|---------|
-| `.jpg`, `.jpeg` | jpeginfo | jpeginfo |
-| `.png` | pngcheck | pngcheck |
-| `.gif`, `.bmp`, `.tiff`, `.tif` | identify | imagemagick |
-| `.webp`, `.heic` | identify | imagemagick |
-| `.cr2`, `.nef`, `.arw`, `.raw`, `.dng` | exiftool | libimage-exiftool-perl |
+### Legend
+- ✅ **Full**: Reliable validation with proper exit codes
+- ⚠️ **Partial**: Limited validation (may not catch all corruption)
+- ❌ **Untestable**: No Linux tool available
 
-### Archive
-
-| Extension | Tool | Package |
-|-----------|------|---------|
-| `.zip` | unzip | unzip |
-| `.tar` | tar | tar |
-| `.gz` | gzip | gzip |
-| `.bz2` | bzip2 | bzip2 |
-| `.xz` | xz | xz-utils |
-| `.lz4` | lz4 | lz4 |
-| `.zst`, `.zstd` | zstd | zstd |
-| `.7z` | 7z | p7zip-full |
-| `.rar` | unrar | unrar |
-
-#### Compound Archive Extensions
-
-| Extension | Tool | Package |
-|-----------|------|---------|
-| `.tar.gz` | tar | tar |
-| `.tar.bz2` | tar | tar |
-| `.tar.xz` | tar | tar |
-| `.tar.zst` | tar | tar |
-
-### Document
-
-| Extension | Tool | Package |
-|-----------|------|---------|
-| `.pdf` | qpdf | qpdf |
-| `.epub` | epubcheck | epubcheck |
-| `.docx`, `.xlsx`, `.pptx` | unzip | unzip |
+### Known Untestable Formats
+| Extension | Description |
+|-----------|-------------|
+| .sfk | Sony Sound Forge peak file (proprietary cache) |
+| .ifo/.bup | DVD navigation files (require full DVD structure) |
 
 ## Adding New Validators
 

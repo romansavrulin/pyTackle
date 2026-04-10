@@ -67,6 +67,7 @@ class ToolConfig:
     check_stderr: Optional[str] = None       # Regex pattern to find in stderr (for DEFAULT level)
     pedantic_binary: Optional[str] = None    # Alternative binary for PEDANTIC level
     pedantic_args: Optional[Tuple[str, ...]] = None  # Alternative args for PEDANTIC level
+    args_after_file: Tuple[str, ...] = ()    # Arguments AFTER the file path (e.g., for ddjvu output)
 
 
 # Common patterns for check_stderr
@@ -220,6 +221,41 @@ TOOL_REGISTRY: Dict[str, ToolConfig] = {
     '.pdf':   ToolConfig('qpdf', 'qpdf', ('--check',), success_codes=(0, 3)),
     '.epub':  ToolConfig('epubcheck', 'epubcheck', (),
                          check_stderr=_EPUBCHECK_STDERR),
+
+    # GoPro proxy video - uses ffprobe like other video formats
+    '.lrv':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+
+    # Thumbnail - JPEG format
+    '.thm':   ToolConfig('jpeginfo', 'jpeginfo', ('-c',),
+                         check_stderr=_JPEGINFO_STDERR),
+
+    # Insta360 video - partial support via ffprobe
+    '.insv':  ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+
+    # Rich Text Format
+    '.rtf':   ToolConfig('unrtf', 'unrtf', ('--text',)),
+
+    # Old Microsoft Word binary format
+    '.doc':   ToolConfig('antiword', 'antiword', ()),
+
+    # FictionBook ebook (XML-based)
+    '.fb2':   ToolConfig('xmllint', 'libxml2-utils', ('--noout',)),
+
+    # 360-degree video - typically MP4
+    '.360':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+
+    # DjVu document
+    '.djvu':  ToolConfig('ddjvu', 'djvulibre-bin', ('-format=tiff', '-page=1'),
+                         args_after_file=('/dev/null',)),
 }
 
 # Compound archive extensions (multi-part extensions)
@@ -733,7 +769,7 @@ class MediaIntegrityCheck(TackleFactory):
             # ffmpeg -hwaccel auto -v error -i FILE -f null -
             cmd = [binary] + args_before + [entry.path, '-f', 'null', '-']
         else:
-            cmd = [binary] + args_before + [entry.path]
+            cmd = [binary] + args_before + [entry.path] + list(config.args_after_file)
 
         try:
             result = subprocess.run(
