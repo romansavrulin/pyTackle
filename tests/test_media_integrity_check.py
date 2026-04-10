@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tackles.MediaIntegrityCheck import (
+    CheckLevel,
     COMPOUND_EXTENSIONS,
     TOOL_REGISTRY,
     ToolConfig,
@@ -429,12 +430,13 @@ class TestSpecialCases:
         assert config is not None
         assert config.success_codes == (0,)
 
-    def test_ogg_opus_no_stderr_check_for_others(self):
-        """Non-ogg/opus files should not have stderr check."""
-        config = get_tool_config('.mp4')
+    def test_some_tools_have_no_stderr_check(self):
+        """Some tools should not have stderr check (rely on exit code only)."""
+        # pngcheck, flac, mp3val, tar, gzip, etc. only use exit codes
+        config = get_tool_config('.png')
         assert config.check_stderr is None
 
-        config = get_tool_config('.jpg')
+        config = get_tool_config('.flac')
         assert config.check_stderr is None
 
         config = get_tool_config('.pdf')
@@ -452,11 +454,12 @@ class TestValidateSingleMocked:
     @pytest.fixture
     def mock_media_check(self):
         """Create a mock MediaIntegrityCheck instance."""
-        from tackles.MediaIntegrityCheck import MediaIntegrityCheck
+        from tackles.MediaIntegrityCheck import MediaIntegrityCheck, CheckLevel
 
         # Create minimal mock with required attributes
         mock = MagicMock(spec=MediaIntegrityCheck)
         mock.timeout = 300
+        mock.check_level = CheckLevel.DEFAULT
         mock._validate_single = MediaIntegrityCheck._validate_single
         return mock
 
@@ -561,10 +564,11 @@ class TestOggOpusStderrDetection:
     @pytest.fixture
     def mock_media_check(self):
         """Create a mock MediaIntegrityCheck instance."""
-        from tackles.MediaIntegrityCheck import MediaIntegrityCheck
+        from tackles.MediaIntegrityCheck import MediaIntegrityCheck, CheckLevel
 
         mock = MagicMock(spec=MediaIntegrityCheck)
         mock.timeout = 300
+        mock.check_level = CheckLevel.DEFAULT
         mock._validate_single = MediaIntegrityCheck._validate_single
         return mock
 
@@ -626,10 +630,11 @@ class TestQpdfSpecialExitCode:
     @pytest.fixture
     def mock_media_check(self):
         """Create a mock MediaIntegrityCheck instance."""
-        from tackles.MediaIntegrityCheck import MediaIntegrityCheck
+        from tackles.MediaIntegrityCheck import MediaIntegrityCheck, CheckLevel
 
         mock = MagicMock(spec=MediaIntegrityCheck)
         mock.timeout = 300
+        mock.check_level = CheckLevel.DEFAULT
         mock._validate_single = MediaIntegrityCheck._validate_single
         return mock
 
@@ -1109,3 +1114,349 @@ class TestAllSupportedExtensions:
         config = get_tool_config('.rar')
         assert config is not None
         assert config.binary == 'unrar'
+
+
+# ===========================================================================
+# 13. CheckLevel Enum Tests
+# ===========================================================================
+
+
+class TestCheckLevel:
+    """Tests for CheckLevel enum."""
+
+    def test_all_levels_exist(self):
+        """All three check levels should exist."""
+        assert hasattr(CheckLevel, 'BASIC')
+        assert hasattr(CheckLevel, 'DEFAULT')
+        assert hasattr(CheckLevel, 'PEDANTIC')
+
+    def test_level_values(self):
+        """Check level enum values should match expected strings."""
+        assert CheckLevel.BASIC.value == 'basic'
+        assert CheckLevel.DEFAULT.value == 'default'
+        assert CheckLevel.PEDANTIC.value == 'pedantic'
+
+    def test_level_count(self):
+        """Exactly 3 check levels should exist."""
+        assert len(CheckLevel) == 3
+
+    def test_levels_are_distinct(self):
+        """All check levels should be distinct."""
+        levels = [CheckLevel.BASIC, CheckLevel.DEFAULT, CheckLevel.PEDANTIC]
+        assert len(levels) == len(set(levels))
+
+
+# ===========================================================================
+# 14. Stderr Pattern Tests
+# ===========================================================================
+
+
+class TestStderrPatterns:
+    """Tests for check_stderr patterns in tool configurations."""
+
+    def test_ffprobe_has_check_stderr(self):
+        """All ffprobe-based tools should have check_stderr pattern."""
+        for ext in ['.mp4', '.mkv', '.avi', '.mov', '.wav', '.aac']:
+            config = get_tool_config(ext)
+            assert config is not None, f'{ext} not in registry'
+            assert config.check_stderr is not None, f'{ext} missing check_stderr'
+
+    def test_exiftool_has_check_stderr(self):
+        """All exiftool-based RAW image tools should have check_stderr pattern."""
+        for ext in ['.cr2', '.nef', '.arw', '.raw', '.dng']:
+            config = get_tool_config(ext)
+            assert config is not None, f'{ext} not in registry'
+            assert config.check_stderr is not None, f'{ext} missing check_stderr'
+
+    def test_archive_tools_have_check_stderr(self):
+        """Archive tools (7z, rar, zip) should have check_stderr pattern."""
+        assert get_tool_config('.7z').check_stderr is not None
+        assert get_tool_config('.rar').check_stderr is not None
+        assert get_tool_config('.zip').check_stderr is not None
+
+    def test_reliable_tools_no_check_stderr(self):
+        """Tools with reliable exit codes should not need check_stderr."""
+        # These tools return reliable exit codes, so no stderr pattern needed
+        assert get_tool_config('.flac').check_stderr is None
+        assert get_tool_config('.png').check_stderr is None
+        assert get_tool_config('.pdf').check_stderr is None
+        assert get_tool_config('.tar').check_stderr is None
+
+    def test_ogg_opus_have_check_stderr(self):
+        """OGG and Opus tools should have check_stderr for error detection."""
+        assert get_tool_config('.ogg').check_stderr is not None
+        assert get_tool_config('.opus').check_stderr is not None
+
+
+# ===========================================================================
+# 15. Pedantic Mode Tests
+# ===========================================================================
+
+
+class TestPedanticMode:
+    """Tests for pedantic mode configuration."""
+
+    def test_ffprobe_has_pedantic_binary(self):
+        """ffprobe-based tools should have pedantic_binary=ffmpeg."""
+        for ext in ['.mp4', '.mkv', '.avi', '.mov']:
+            config = get_tool_config(ext)
+            assert config is not None, f'{ext} not in registry'
+            assert config.pedantic_binary == 'ffmpeg', f'{ext} missing pedantic_binary'
+
+    def test_pedantic_args_includes_hwaccel(self):
+        """Pedantic args for video should include -hwaccel auto."""
+        config = get_tool_config('.mp4')
+        assert config is not None
+        assert config.pedantic_args is not None
+        assert '-hwaccel' in config.pedantic_args
+        assert 'auto' in config.pedantic_args
+
+    def test_pedantic_args_includes_error_verbosity(self):
+        """Pedantic args should include -v error for quiet output."""
+        config = get_tool_config('.mp4')
+        assert config is not None
+        assert config.pedantic_args is not None
+        assert '-v' in config.pedantic_args
+        assert 'error' in config.pedantic_args
+
+    def test_non_video_no_pedantic_binary(self):
+        """Non-video tools should not have pedantic_binary."""
+        for ext in ['.zip', '.pdf', '.png', '.flac', '.mp3']:
+            config = get_tool_config(ext)
+            assert config is not None, f'{ext} not in registry'
+            assert config.pedantic_binary is None, f'{ext} should not have pedantic_binary'
+
+    def test_audio_ffprobe_has_pedantic_binary(self):
+        """Audio formats using ffprobe should also have pedantic_binary."""
+        for ext in ['.wav', '.aac', '.m4a', '.wma']:
+            config = get_tool_config(ext)
+            assert config is not None, f'{ext} not in registry'
+            assert config.pedantic_binary == 'ffmpeg', f'{ext} missing pedantic_binary'
+
+
+# ===========================================================================
+# 16. Validation Logic with Levels (mocked)
+# ===========================================================================
+
+
+class TestValidationWithLevels:
+    """Tests for validation logic with different check levels."""
+
+    @pytest.fixture
+    def mock_media_check_basic(self):
+        """Create a mock MediaIntegrityCheck instance with BASIC level."""
+        from tackles.MediaIntegrityCheck import MediaIntegrityCheck
+
+        mock = MagicMock(spec=MediaIntegrityCheck)
+        mock.timeout = 300
+        mock.check_level = CheckLevel.BASIC
+        mock._validate_single = MediaIntegrityCheck._validate_single
+        return mock
+
+    @pytest.fixture
+    def mock_media_check_default(self):
+        """Create a mock MediaIntegrityCheck instance with DEFAULT level."""
+        from tackles.MediaIntegrityCheck import MediaIntegrityCheck
+
+        mock = MagicMock(spec=MediaIntegrityCheck)
+        mock.timeout = 300
+        mock.check_level = CheckLevel.DEFAULT
+        mock._validate_single = MediaIntegrityCheck._validate_single
+        return mock
+
+    @pytest.fixture
+    def mock_media_check_pedantic(self):
+        """Create a mock MediaIntegrityCheck instance with PEDANTIC level."""
+        from tackles.MediaIntegrityCheck import MediaIntegrityCheck
+
+        mock = MagicMock(spec=MediaIntegrityCheck)
+        mock.timeout = 300
+        mock.check_level = CheckLevel.PEDANTIC
+        mock._validate_single = MediaIntegrityCheck._validate_single
+        return mock
+
+    @patch('subprocess.run')
+    @patch('tackles.MediaIntegrityCheck.check_tool_available')
+    def test_basic_level_ignores_stderr(self, mock_available, mock_run, mock_media_check_basic, tmp_path):
+        """BASIC level should only check exit code, not stderr."""
+        from common.FileEntry import FileEntry
+
+        test_file = tmp_path / 'test.mp4'
+        test_file.write_bytes(b'fake mp4')
+        entry = FileEntry.from_fs_path(str(test_file))
+
+        mock_available.return_value = True
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stderr='[error] some warning message'
+        )
+
+        # With BASIC level, should return VALID despite stderr errors
+        outcome = mock_media_check_basic._validate_single(mock_media_check_basic, entry)
+        assert outcome.result == ValidationResult.VALID
+
+    @patch('subprocess.run')
+    @patch('tackles.MediaIntegrityCheck.check_tool_available')
+    def test_default_level_checks_stderr(self, mock_available, mock_run, mock_media_check_default, tmp_path):
+        """DEFAULT level should check stderr patterns."""
+        from common.FileEntry import FileEntry
+
+        test_file = tmp_path / 'test.mp4'
+        test_file.write_bytes(b'fake mp4')
+        entry = FileEntry.from_fs_path(str(test_file))
+
+        mock_available.return_value = True
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stderr='[error] invalid header'
+        )
+
+        # With DEFAULT level, should return CORRUPT due to stderr pattern match
+        outcome = mock_media_check_default._validate_single(mock_media_check_default, entry)
+        assert outcome.result == ValidationResult.CORRUPT
+
+    @patch('subprocess.run')
+    @patch('tackles.MediaIntegrityCheck.check_tool_available')
+    def test_pedantic_level_uses_ffmpeg(self, mock_available, mock_run, mock_media_check_pedantic, tmp_path):
+        """PEDANTIC level should use ffmpeg instead of ffprobe for video."""
+        from common.FileEntry import FileEntry
+
+        test_file = tmp_path / 'test.mp4'
+        test_file.write_bytes(b'fake mp4')
+        entry = FileEntry.from_fs_path(str(test_file))
+
+        mock_available.return_value = True
+        mock_run.return_value = MagicMock(returncode=0, stderr='')
+
+        outcome = mock_media_check_pedantic._validate_single(mock_media_check_pedantic, entry)
+
+        # Verify ffmpeg was called, not ffprobe
+        assert outcome.tool == 'ffmpeg'
+        assert outcome.result == ValidationResult.VALID
+
+    @patch('subprocess.run')
+    @patch('tackles.MediaIntegrityCheck.check_tool_available')
+    def test_pedantic_level_falls_back_to_normal_for_non_video(self, mock_available, mock_run, mock_media_check_pedantic, tmp_path):
+        """PEDANTIC level should use normal binary for tools without pedantic_binary."""
+        from common.FileEntry import FileEntry
+
+        test_file = tmp_path / 'test.pdf'
+        test_file.write_bytes(b'%PDF-1.4')
+        entry = FileEntry.from_fs_path(str(test_file))
+
+        mock_available.return_value = True
+        mock_run.return_value = MagicMock(returncode=0, stderr='')
+
+        outcome = mock_media_check_pedantic._validate_single(mock_media_check_pedantic, entry)
+
+        # Should still use qpdf since PDF has no pedantic_binary
+        assert outcome.tool == 'qpdf'
+        assert outcome.result == ValidationResult.VALID
+
+
+# ===========================================================================
+# 17. Stderr Pattern Matching Tests
+# ===========================================================================
+
+
+class TestStderrPatternMatching:
+    """Tests for stderr pattern regex matching."""
+
+    def test_ffprobe_pattern_matches_error(self):
+        """ffprobe pattern should match error indicators."""
+        import re
+
+        config = get_tool_config('.mp4')
+        pattern = config.check_stderr
+        assert pattern is not None
+
+        assert re.search(pattern, '[error] invalid something')
+        assert re.search(pattern, 'moov atom not found')
+        assert re.search(pattern, 'Invalid frame dimensions')
+        assert re.search(pattern, 'Corrupt data')
+        assert re.search(pattern, 'ERROR: something failed')
+
+    def test_ffprobe_pattern_ignores_normal_output(self):
+        """ffprobe pattern should not match normal output."""
+        import re
+
+        config = get_tool_config('.mp4')
+        pattern = config.check_stderr
+        assert pattern is not None
+
+        assert not re.search(pattern, 'Input #0, mov,mp4,m4a')
+        assert not re.search(pattern, 'Duration: 00:01:23')
+        assert not re.search(pattern, 'Stream #0:0: Video: h264')
+        assert not re.search(pattern, '')
+
+    def test_7z_pattern_matches_warnings(self):
+        """7z pattern should match warnings and errors."""
+        import re
+
+        config = get_tool_config('.7z')
+        pattern = config.check_stderr
+        assert pattern is not None
+
+        assert re.search(pattern, 'Warnings: 1')
+        assert re.search(pattern, 'Warnings: 42')
+        assert re.search(pattern, 'Cannot open the file')
+        assert re.search(pattern, 'Error: file is broken')
+
+    def test_7z_pattern_ignores_warnings_zero(self):
+        """7z pattern should not match 'Warnings: 0'."""
+        import re
+
+        config = get_tool_config('.7z')
+        pattern = config.check_stderr
+        assert pattern is not None
+
+        # 'Warnings: 0' should not trigger the pattern
+        assert not re.search(pattern, 'Warnings: 0')
+
+    def test_unrar_pattern_matches_errors(self):
+        """unrar pattern should match various error conditions."""
+        import re
+
+        config = get_tool_config('.rar')
+        pattern = config.check_stderr
+        assert pattern is not None
+
+        assert re.search(pattern, 'ERROR: CRC failed')
+        assert re.search(pattern, 'corrupt header')
+        assert re.search(pattern, 'CRC failed in file.txt')
+
+    def test_exiftool_pattern_matches_warnings(self):
+        """exiftool pattern should match warnings and errors."""
+        import re
+
+        config = get_tool_config('.cr2')
+        pattern = config.check_stderr
+        assert pattern is not None
+
+        assert re.search(pattern, 'Warning: Invalid data')
+        assert re.search(pattern, 'Error: File format error')
+        assert re.search(pattern, 'Invalid EXIF data')
+
+    def test_ogg_pattern_matches_error(self):
+        """ogg pattern should match error keyword."""
+        import re
+
+        config = get_tool_config('.ogg')
+        pattern = config.check_stderr
+        assert pattern is not None
+
+        assert re.search(pattern, 'error in stream')
+        assert re.search(pattern, 'ERROR: invalid')
+        assert re.search(pattern, 'Error reading file')
+
+    def test_ogg_pattern_case_insensitive(self):
+        """ogg pattern should be case insensitive."""
+        import re
+
+        config = get_tool_config('.ogg')
+        pattern = config.check_stderr
+        assert pattern is not None
+
+        assert re.search(pattern, 'error')
+        assert re.search(pattern, 'Error')
+        assert re.search(pattern, 'ERROR')

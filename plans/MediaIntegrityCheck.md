@@ -866,7 +866,136 @@ Uses canonical 10-column format via [`write_listing()`](../common/listing.py:162
 
 ---
 
-## Testing Strategy
+## 9. Validation Levels
+
+### Problem Prerequisites
+
+Some validation tools (like ffprobe) return exit code 0 even when they detect issues, outputting warnings/errors to stderr instead. This means relying solely on exit codes can miss corrupt files.
+
+**Example - ffprobe with corrupt video:**
+```
+[mp2 @ 0x5831d846bb00] Header missing
+[mpeg2video @ 0x5831d84693c0] Invalid frame dimensions 0x0.
+```
+Exit code: 0 (falsely reports as valid)
+
+### Analysis Results
+
+**Tools Requiring stderr Pattern Matching:**
+
+| Priority | Tool | Extensions | Pattern | Reason |
+|----------|------|------------|---------|--------|
+| High | `ffprobe` | mp4, mkv, avi, mov, wmv, flv, webm, m4v, mpeg, mpg, 3gp, ts, m2ts, vob, wav, aac, m4a, wma, aiff, ape | `r'(?i)(error\|invalid\|corrupt\|moov atom not found)'` | Outputs error messages to stderr with exit 0 for partially readable media |
+| High | `exiftool` | cr2, nef, arw, raw, dng | `r'(?i)(warning\|error\|invalid)'` | Very permissive exit codes; reports issues to streams only |
+| High | `7z` | 7z | `r'(?i)(error\|cannot\|warnings:\s*[1-9])'` | Warnings counter doesn't affect exit code |
+| High | `epubcheck` | epub | `r'(?i)(error\|fatal)'` | Returns 0 for warning-only validation |
+| Medium | `jpeginfo` | jpg, jpeg | `r'(?i)(warning\|error\|corrupt)'` | Some issues as warnings only |
+| Medium | `unrar` | rar | `r'(?i)(error\|corrupt\|crc failed)'` | Rare edge cases |
+| Medium | `unzip` | zip, docx, xlsx, pptx | `r'(?i)(error\|warning\|bad crc)'` | Warning messages possible |
+
+**Already Correctly Configured:**
+- `ogginfo` - has `check_stderr=r'(?i)error'`
+- `opusinfo` - has `check_stderr=r'(?i)error'`
+
+**No Changes Needed (Reliable Exit Codes):**
+`mp3val`, `flac`, `pngcheck`, `identify` (with `-regard-warnings`), `tar`, `gzip`, `bzip2`, `xz`, `lz4`, `zstd`, `qpdf`
+
+### Proposed Validation Levels
+
+Design 3 validation levels controlled by CLI flag:
+
+#### Level 1: Basic (`--check-level basic`)
+- **Behavior**: Exit code only
+- **Speed**: Fastest
+- **Accuracy**: May miss files with stderr warnings but exit 0
+- **Use case**: Quick scan, performance-critical
+
+#### Level 2: Default (`--check-level default` or no flag)
+- **Behavior**: Exit code + stderr pattern matching
+- **Speed**: Same as basic (no extra processing)
+- **Accuracy**: Catches most issues including stderr warnings
+- **Use case**: Standard validation (recommended)
+
+#### Level 3: Pedantic (`--check-level pedantic`)
+- **Behavior**: Full content validation
+- **Speed**: Much slower (decodes entire files)
+- **Accuracy**: Maximum - catches all corruption including mid-file issues
+- **Changes for video/audio**:
+  - Use `ffmpeg -hwaccel auto -v error -i FILE -f null -` instead of `ffprobe`
+  - Decodes every frame/sample
+- **Use case**: Archival verification, thorough checks
+
+**Hardware Acceleration Note (`-hwaccel auto`):**
+- Enables automatic hardware acceleration selection for decoding
+- Silently falls back to software decoding if no HW accel is available
+- Provides 2-10x speedup on systems with hardware decoders (VAAPI, NVDEC, VideoToolbox)
+- No stderr warnings when HW accel is unavailable — safe for error pattern matching
+
+### Implementation Design
+
+#### 1. New Enum
+
+```python
+class CheckLevel(Enum):
+    BASIC = 'basic'      # Exit code only
+    DEFAULT = 'default'  # Exit code + stderr patterns
+    PEDANTIC = 'pedantic' # Full decode/verify
+```
+
+#### 2. Updated ToolConfig
+
+```python
+@dataclass
+class ToolConfig:
+    binary: str
+    apt_package: str
+    args: Tuple[str, ...]
+    success_codes: Tuple[int, ...] = (0,)
+    check_stderr: Optional[str] = None        # For DEFAULT level
+    pedantic_binary: Optional[str] = None     # Alternative binary for PEDANTIC
+    pedantic_args: Optional[Tuple[str, ...]] = None  # Alternative args for PEDANTIC
+```
+
+#### 3. CLI Argument
+
+```
+--check-level {basic,default,pedantic}
+    Validation thoroughness level (default: default)
+    basic:    Exit code only (fastest)
+    default:  Exit code + stderr pattern matching
+    pedantic: Full content decode/verification (slowest)
+```
+
+#### 4. Validation Logic
+
+```python
+def _validate_single(self, entry: FileEntry) -> Tuple[ValidationResult, Optional[str]]:
+    config = get_tool_config(extension)
+    
+    if self.check_level == CheckLevel.PEDANTIC and config.pedantic_binary:
+        binary = config.pedantic_binary
+        args = config.pedantic_args
+    else:
+        binary = config.binary
+        args = config.args
+    
+    result = subprocess.run(...)
+    
+    # Basic: exit code only
+    if result.returncode not in config.success_codes:
+        return ValidationResult.CORRUPT, "exit code"
+    
+    # Default/Pedantic: also check stderr
+    if self.check_level != CheckLevel.BASIC and config.check_stderr:
+        if re.search(config.check_stderr, result.stderr):
+            return ValidationResult.CORRUPT, "stderr pattern"
+    
+    return ValidationResult.VALID, None
+```
+
+---
+
+## 10. Testing Strategy
 
 ### Unit Tests
 

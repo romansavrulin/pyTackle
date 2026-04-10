@@ -30,6 +30,17 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# CheckLevel Enum (3 validation levels)
+# ---------------------------------------------------------------------------
+
+class CheckLevel(Enum):
+    """Validation thoroughness level."""
+    BASIC = 'basic'        # Exit code only (fastest)
+    DEFAULT = 'default'    # Exit code + stderr patterns (recommended)
+    PEDANTIC = 'pedantic'  # Full decode/verify (slowest)
+
+
+# ---------------------------------------------------------------------------
 # ValidationResult Enum (5 values)
 # ---------------------------------------------------------------------------
 
@@ -53,42 +64,119 @@ class ToolConfig:
     apt_package: str                         # Debian/Ubuntu package name
     args: Tuple[str, ...]                    # Arguments BEFORE the file path
     success_codes: Tuple[int, ...] = (0,)    # Exit codes that mean "valid"
-    check_stderr: Optional[str] = None       # Regex pattern to find in stderr (for ogg/opus)
+    check_stderr: Optional[str] = None       # Regex pattern to find in stderr (for DEFAULT level)
+    pedantic_binary: Optional[str] = None    # Alternative binary for PEDANTIC level
+    pedantic_args: Optional[Tuple[str, ...]] = None  # Alternative args for PEDANTIC level
 
+
+# Common patterns for check_stderr
+_FFPROBE_STDERR = r'(?i)(error|invalid|corrupt|moov atom not found)'
+_EXIFTOOL_STDERR = r'(?i)(warning|error|invalid)'
+_7Z_STDERR = r'(?i)(error|cannot|warnings:\s*[1-9])'
+_EPUBCHECK_STDERR = r'(?i)(error|fatal)'
+_JPEGINFO_STDERR = r'(?i)(warning|error|corrupt)'
+_UNRAR_STDERR = r'(?i)(error|corrupt|crc failed)'
+_UNZIP_STDERR = r'(?i)(error|warning|bad crc)'
+
+# Common pedantic settings for ffprobe extensions
+_FFMPEG_PEDANTIC_BINARY = 'ffmpeg'
+_FFMPEG_PEDANTIC_ARGS = ('-hwaccel', 'auto', '-v', 'error', '-i')
 
 # File extension to tool mapping
 TOOL_REGISTRY: Dict[str, ToolConfig] = {
-    # Video formats
-    '.mp4':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.mkv':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.avi':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.mov':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.wmv':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.flv':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.webm':  ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.m4v':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.mpeg':  ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.mpg':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.3gp':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.ts':    ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.m2ts':  ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.vob':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
+    # Video formats (ffprobe with pedantic ffmpeg decode)
+    '.mp4':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.mkv':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.avi':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.mov':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.wmv':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.flv':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.webm':  ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.m4v':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.mpeg':  ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.mpg':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.3gp':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.ts':    ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.m2ts':  ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.vob':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
 
     # Audio formats
     '.mp3':   ToolConfig('mp3val', 'mp3val', ('-si',)),
     '.flac':  ToolConfig('flac', 'flac', ('-ts',)),
     '.ogg':   ToolConfig('ogginfo', 'vorbis-tools', (), check_stderr=r'(?i)error'),
     '.opus':  ToolConfig('opusinfo', 'opus-tools', (), check_stderr=r'(?i)error'),
-    '.wav':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.aac':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.m4a':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.wma':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.aiff':  ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
-    '.ape':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i')),
+    '.wav':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.aac':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.m4a':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.wma':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.aiff':  ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
+    '.ape':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
+                         check_stderr=_FFPROBE_STDERR,
+                         pedantic_binary=_FFMPEG_PEDANTIC_BINARY,
+                         pedantic_args=_FFMPEG_PEDANTIC_ARGS),
 
     # Image formats
-    '.jpg':   ToolConfig('jpeginfo', 'jpeginfo', ('-c',)),
-    '.jpeg':  ToolConfig('jpeginfo', 'jpeginfo', ('-c',)),
+    '.jpg':   ToolConfig('jpeginfo', 'jpeginfo', ('-c',),
+                         check_stderr=_JPEGINFO_STDERR),
+    '.jpeg':  ToolConfig('jpeginfo', 'jpeginfo', ('-c',),
+                         check_stderr=_JPEGINFO_STDERR),
     '.png':   ToolConfig('pngcheck', 'pngcheck', ('-q',)),
     '.gif':   ToolConfig('identify', 'imagemagick', ('-regard-warnings',)),
     '.bmp':   ToolConfig('identify', 'imagemagick', ('-regard-warnings',)),
@@ -96,17 +184,26 @@ TOOL_REGISTRY: Dict[str, ToolConfig] = {
     '.tif':   ToolConfig('identify', 'imagemagick', ('-regard-warnings',)),
     '.webp':  ToolConfig('identify', 'imagemagick', ('-regard-warnings',)),
     '.heic':  ToolConfig('identify', 'imagemagick', ('-regard-warnings',)),
-    '.cr2':   ToolConfig('exiftool', 'libimage-exiftool-perl', ('-validate', '-warning')),
-    '.nef':   ToolConfig('exiftool', 'libimage-exiftool-perl', ('-validate', '-warning')),
-    '.arw':   ToolConfig('exiftool', 'libimage-exiftool-perl', ('-validate', '-warning')),
-    '.raw':   ToolConfig('exiftool', 'libimage-exiftool-perl', ('-validate', '-warning')),
-    '.dng':   ToolConfig('exiftool', 'libimage-exiftool-perl', ('-validate', '-warning')),
+    '.cr2':   ToolConfig('exiftool', 'libimage-exiftool-perl', ('-validate', '-warning'),
+                         check_stderr=_EXIFTOOL_STDERR),
+    '.nef':   ToolConfig('exiftool', 'libimage-exiftool-perl', ('-validate', '-warning'),
+                         check_stderr=_EXIFTOOL_STDERR),
+    '.arw':   ToolConfig('exiftool', 'libimage-exiftool-perl', ('-validate', '-warning'),
+                         check_stderr=_EXIFTOOL_STDERR),
+    '.raw':   ToolConfig('exiftool', 'libimage-exiftool-perl', ('-validate', '-warning'),
+                         check_stderr=_EXIFTOOL_STDERR),
+    '.dng':   ToolConfig('exiftool', 'libimage-exiftool-perl', ('-validate', '-warning'),
+                         check_stderr=_EXIFTOOL_STDERR),
 
     # Archive formats
-    '.zip':   ToolConfig('unzip', 'unzip', ('-t',)),
-    '.docx':  ToolConfig('unzip', 'unzip', ('-t',)),
-    '.xlsx':  ToolConfig('unzip', 'unzip', ('-t',)),
-    '.pptx':  ToolConfig('unzip', 'unzip', ('-t',)),
+    '.zip':   ToolConfig('unzip', 'unzip', ('-t',),
+                         check_stderr=_UNZIP_STDERR),
+    '.docx':  ToolConfig('unzip', 'unzip', ('-t',),
+                         check_stderr=_UNZIP_STDERR),
+    '.xlsx':  ToolConfig('unzip', 'unzip', ('-t',),
+                         check_stderr=_UNZIP_STDERR),
+    '.pptx':  ToolConfig('unzip', 'unzip', ('-t',),
+                         check_stderr=_UNZIP_STDERR),
     '.tar':   ToolConfig('tar', 'tar', ('-tf',)),
     '.gz':    ToolConfig('gzip', 'gzip', ('-t',)),
     '.bz2':   ToolConfig('bzip2', 'bzip2', ('-t',)),
@@ -114,12 +211,15 @@ TOOL_REGISTRY: Dict[str, ToolConfig] = {
     '.lz4':   ToolConfig('lz4', 'lz4', ('-t',)),
     '.zst':   ToolConfig('zstd', 'zstd', ('-t',)),
     '.zstd':  ToolConfig('zstd', 'zstd', ('-t',)),
-    '.7z':    ToolConfig('7z', 'p7zip-full', ('t',)),
-    '.rar':   ToolConfig('unrar', 'unrar', ('t',)),
+    '.7z':    ToolConfig('7z', 'p7zip-full', ('t',),
+                         check_stderr=_7Z_STDERR),
+    '.rar':   ToolConfig('unrar', 'unrar', ('t',),
+                         check_stderr=_UNRAR_STDERR),
 
     # Document formats
     '.pdf':   ToolConfig('qpdf', 'qpdf', ('--check',), success_codes=(0, 3)),
-    '.epub':  ToolConfig('epubcheck', 'epubcheck', ()),
+    '.epub':  ToolConfig('epubcheck', 'epubcheck', (),
+                         check_stderr=_EPUBCHECK_STDERR),
 }
 
 # Compound archive extensions (multi-part extensions)
@@ -327,6 +427,17 @@ class MediaIntegrityCheck(TackleFactory):
             help='Per-file validation timeout in seconds (default: 300)',
         )
 
+        # Check level
+        subparser.add_argument(
+            '--check-level',
+            type=str,
+            choices=['basic', 'default', 'pedantic'],
+            default='default',
+            help='Validation thoroughness level. basic: exit code only (fastest). '
+                 'default: exit code + stderr pattern matching. '
+                 'pedantic: full content decode/verification (slowest)',
+        )
+
     def __init__(self, parser):
         super().__init__(parser)
         options, _ = parser.parse_known_args()
@@ -340,6 +451,7 @@ class MediaIntegrityCheck(TackleFactory):
         self.list_tools: bool = options.list_tools
         self.install_cmd: bool = options.install_cmd
         self.timeout: int = options.timeout
+        self.check_level: CheckLevel = CheckLevel(options.check_level)
 
         # Parse extensions filter
         if options.extensions:
@@ -381,6 +493,7 @@ class MediaIntegrityCheck(TackleFactory):
         logger.info('Directory: %s', self.directory)
         logger.info('Output base: %s', self.output_base)
         logger.info('Timeout: %d seconds', self.timeout)
+        logger.info('Check level: %s', self.check_level.value)
         if self.allowed_extensions:
             logger.info('Extensions filter: %s', ', '.join(sorted(self.allowed_extensions)))
         else:
@@ -578,6 +691,11 @@ class MediaIntegrityCheck(TackleFactory):
         
         Returns:
             ValidationOutcome with result, tool info, and any error details.
+        
+        Validation behavior depends on check_level:
+        - BASIC: Exit code only (fastest)
+        - DEFAULT: Exit code + stderr pattern matching (recommended)
+        - PEDANTIC: Full decode/verification using alternative binary if configured
         """
         ext = get_extension(entry.path)
         config = get_tool_config(ext)
@@ -590,17 +708,32 @@ class MediaIntegrityCheck(TackleFactory):
                 error_message='No validator defined for this file extension',
             )
 
+        # Determine binary and args based on check level
+        if self.check_level == CheckLevel.PEDANTIC and config.pedantic_binary:
+            binary = config.pedantic_binary
+            args_before = list(config.pedantic_args or ())
+            # Special handling for ffmpeg: need to add -f null - after file
+            is_ffmpeg_pedantic = (binary == 'ffmpeg')
+        else:
+            binary = config.binary
+            args_before = list(config.args)
+            is_ffmpeg_pedantic = False
+
         # Check if tool is available
-        if not check_tool_available(config.binary):
+        if not check_tool_available(binary):
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_MISSING,
-                tool=config.binary,
-                error_message=f'Tool not installed: {config.binary} (apt-get install {config.apt_package})',
+                tool=binary,
+                error_message=f'Tool not installed: {binary} (apt-get install {config.apt_package})',
             )
 
-        # Build command: binary + args + file path
-        cmd = [config.binary] + list(config.args) + [entry.path]
+        # Build command
+        if is_ffmpeg_pedantic:
+            # ffmpeg -hwaccel auto -v error -i FILE -f null -
+            cmd = [binary] + args_before + [entry.path, '-f', 'null', '-']
+        else:
+            cmd = [binary] + args_before + [entry.path]
 
         try:
             result = subprocess.run(
@@ -616,15 +749,15 @@ class MediaIntegrityCheck(TackleFactory):
             # Check for success based on exit code
             is_valid = exit_code in config.success_codes
 
-            # Special stderr checking (for ogg/opus)
-            if is_valid and config.check_stderr and result.stderr:
-                if re.search(config.check_stderr, result.stderr):
+            # Check stderr patterns (for DEFAULT and PEDANTIC levels)
+            if is_valid and self.check_level != CheckLevel.BASIC and config.check_stderr:
+                if result.stderr and re.search(config.check_stderr, result.stderr):
                     is_valid = False
 
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.VALID if is_valid else ValidationResult.CORRUPT,
-                tool=config.binary,
+                tool=binary,
                 exit_code=exit_code,
                 stderr_snippet=stderr,
             )
@@ -633,21 +766,21 @@ class MediaIntegrityCheck(TackleFactory):
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_ERROR,
-                tool=config.binary,
+                tool=binary,
                 error_message=f'Validation timed out after {self.timeout}s',
             )
         except OSError as exc:
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_ERROR,
-                tool=config.binary,
+                tool=binary,
                 error_message=str(exc),
             )
         except Exception as exc:
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_ERROR,
-                tool=config.binary,
+                tool=binary,
                 error_message=f'Unexpected error: {exc}',
             )
 

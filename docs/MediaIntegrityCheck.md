@@ -96,6 +96,33 @@ pyTackle MediaIntegrityCheck [OPTIONS] DIRECTORY
 | `--install-cmd` | Print apt-get install command for missing tools, then exit |
 | `--extensions EXT[,EXT,...]` | Filter which file extensions to check. Only files matching these extensions will be scanned. Example: `--extensions mp4,mp3,jpg` |
 | `--timeout SECONDS` | Per-file validation timeout in seconds (default: 300) |
+| `--check-level` | Validation level: basic, default, or pedantic (default: `default`) |
+
+## Validation Levels
+
+MediaIntegrityCheck supports three validation thoroughness levels, controlled by `--check-level`:
+
+| Level | Flag | Description | Speed |
+|-------|------|-------------|-------|
+| Basic | `--check-level basic` | Exit code only | Fastest |
+| Default | `--check-level default` | Exit code + stderr pattern matching | Fast (recommended) |
+| Pedantic | `--check-level pedantic` | Full content decode/verification | Slowest |
+
+### Basic Level
+Only checks the tool's exit code. Fastest but may miss some corruption that tools report via stderr warnings while returning exit code 0.
+
+### Default Level (Recommended)
+Checks both exit code and stderr patterns. Catches issues like:
+- ffprobe reporting "Invalid frame dimensions" or "Header missing"
+- 7z reporting warnings but exit 0
+- exiftool reporting invalid metadata
+
+### Pedantic Level
+For video/audio files, uses full decode instead of container validation:
+- Runs `ffmpeg -hwaccel auto -v error -i FILE -f null -` instead of `ffprobe`
+- Decodes every frame/sample to detect mid-file corruption
+- Uses hardware acceleration when available (2-10x faster)
+- Much slower than other levels - processes entire file content
 
 ## Output Files
 
@@ -326,6 +353,15 @@ Increase timeout for very large video files:
 ```bash
 pyTackle MediaIntegrityCheck /large_videos -o results --timeout 600
 ```
+
+### Thorough Video Validation (Pedantic Mode)
+
+```bash
+# Full decode validation with hardware acceleration
+pyTackle MediaIntegrityCheck /media/videos --check-level pedantic -o video_check
+```
+
+This decodes every frame to detect corruption that container-level checks would miss.
 
 ### Workflow: Find and Review Corrupt Files
 
