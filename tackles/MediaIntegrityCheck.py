@@ -858,14 +858,15 @@ class MediaIntegrityCheck(TackleFactory):
 
         exit_code = result.returncode
         stderr = result.stderr[:1500] if result.stderr else None
+        stdout = result.stdout[:1500] if result.stdout else None
 
         # 3. Log stdout/stderr
         if self.verbose:
             logger.debug('  Return code: %d', result.returncode)
             if result.stdout.strip():
                 # Truncate long output
-                stdout = result.stdout.strip()[:1500]
-                logger.debug('  stdout: %s', stdout)
+                stdout_log = result.stdout.strip()[:1500]
+                logger.debug('  stdout: %s', stdout_log)
             if result.stderr.strip():
                 stderr_log = result.stderr.strip()[:1500]
                 logger.debug('  stderr: %s', stderr_log)
@@ -876,13 +877,13 @@ class MediaIntegrityCheck(TackleFactory):
         # Check stderr patterns (for DEFAULT and PEDANTIC levels)
         if self.check_level != CheckLevel.BASIC and config.check_stderr:
             if result.stderr and not re.search(config.check_stderr, result.stderr):
-                logger.warning(
+                logger.debug(
                     'Tool report While processing: %s (size=%s, ext=%s)',
                     entry.path,
                     self._format_size(entry.size) if entry.size else 'unknown',
                     ext or 'none'
                 )
-                logger.warning(
+                logger.debug(
                         '  STDERR: NOT EMPTY, but took valid decision - stderr\n%r\n not matched pattern %r',
                         result.stderr, config.check_stderr
                     )
@@ -905,13 +906,13 @@ class MediaIntegrityCheck(TackleFactory):
         # Check stdout patterns (for DEFAULT and PEDANTIC levels)
         if self.check_level != CheckLevel.BASIC and config.check_stdout:
             if result.stdout and not re.search(config.check_stdout, result.stdout):
-                logger.warning(
+                logger.debug(
                     'Tool report While processing: %s (size=%s, ext=%s)',
                     entry.path,
                     self._format_size(entry.size) if entry.size else 'unknown',
                     ext or 'none'
                 )
-                logger.warning(
+                logger.debug(
                         '  STDOUT: NOT EMPTY, but took valid decision - stdout\n%r\n not matched pattern %r',
                         result.stdout, config.check_stdout
                     )
@@ -932,7 +933,7 @@ class MediaIntegrityCheck(TackleFactory):
                 logger.debug('  Stdout pattern check: no match (OK)')
 
         # 4. Check basic decision
-        if config.check_stderr is None and not is_valid:
+        if not is_valid:
             if self.verbose:
                 logger.debug(
                     '  Decision: CORRUPT - exit code %d not in success codes %s',
