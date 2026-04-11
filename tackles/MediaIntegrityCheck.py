@@ -65,17 +65,18 @@ class ToolConfig:
     args: Tuple[str, ...]                    # Arguments BEFORE the file path
     success_codes: Tuple[int, ...] = (0,)    # Exit codes that mean "valid"
     check_stderr: Optional[str] = None       # Regex pattern to find in stderr (for DEFAULT level)
+    check_stdout: Optional[str] = None       # Regex pattern to find in stdout (for DEFAULT level)
     pedantic_binary: Optional[str] = None    # Alternative binary for PEDANTIC level
     pedantic_args: Optional[Tuple[str, ...]] = None  # Alternative args for PEDANTIC level
     args_after_file: Tuple[str, ...] = ()    # Arguments AFTER the file path (e.g., for ddjvu output)
 
 
 # Common patterns for check_stderr
-_FFPROBE_STDERR = r'(?i)(error|invalid|corrupt|moov atom not found)'
+_FFPROBE_STDERR = r'(?i)(error|invalid|corrupt|moov atom not found|Header missing)'
 _EXIFTOOL_STDERR = r'(?i)(warning|error|invalid)'
 _7Z_STDERR = r'(?i)(error|cannot|warnings:\s*[1-9])'
 _EPUBCHECK_STDERR = r'(?i)(error|fatal)'
-_JPEGINFO_STDERR = r'(?i)(warning|error|corrupt)'
+_JPEGINFO_STDERR = r'(?i)(error)'
 _UNRAR_STDERR = r'(?i)(error|corrupt|crc failed)'
 _UNZIP_STDERR = r'(?i)(error|warning|bad crc)'
 
@@ -146,7 +147,7 @@ TOOL_REGISTRY: Dict[str, ToolConfig] = {
     # Audio formats
     '.mp3':   ToolConfig('mp3val', 'mp3val', ('-si',)),
     '.flac':  ToolConfig('flac', 'flac', ('-ts',)),
-    '.ogg':   ToolConfig('ogginfo', 'vorbis-tools', (), check_stderr=r'(?i)error'),
+    '.ogg':   ToolConfig('ogginfo', 'vorbis-tools', (), success_codes=(0, 1), check_stdout=r'(?i)(error|corrupted|invalid header page|eos not set on|indicates missing data)'),
     '.opus':  ToolConfig('opusinfo', 'opus-tools', (), check_stderr=r'(?i)error'),
     '.wav':   ToolConfig('ffprobe', 'ffmpeg', ('-v', 'error', '-i'),
                          check_stderr=_FFPROBE_STDERR,
@@ -178,7 +179,7 @@ TOOL_REGISTRY: Dict[str, ToolConfig] = {
                          check_stderr=_JPEGINFO_STDERR),
     '.jpeg':  ToolConfig('jpeginfo', 'jpeginfo', ('-c',),
                          check_stderr=_JPEGINFO_STDERR),
-    '.png':   ToolConfig('pngcheck', 'pngcheck', ('-q',)),
+    '.png':   ToolConfig('identify', 'imagemagick', (), check_stderr=r'(?i)(error|corrupt)'),
     '.gif':   ToolConfig('identify', 'imagemagick', ('-regard-warnings',)),
     '.bmp':   ToolConfig('identify', 'imagemagick', ('-regard-warnings',)),
     '.tiff':  ToolConfig('identify', 'imagemagick', ('-regard-warnings',)),
@@ -255,7 +256,7 @@ TOOL_REGISTRY: Dict[str, ToolConfig] = {
 
     # DjVu document
     '.djvu':  ToolConfig('ddjvu', 'djvulibre-bin', ('-format=tiff', '-page=1'),
-                         args_after_file=('/dev/null',)),
+                         args_after_file=('/tmp/pyTackle-ddujvu.tiff',)),
 }
 
 # Compound archive extensions (multi-part extensions)
@@ -498,6 +499,9 @@ class MediaIntegrityCheck(TackleFactory):
         self.timeout: int = options.timeout
         self.check_level: CheckLevel = CheckLevel(options.check_level)
         self.verbose: bool = options.verbose
+
+        if self.verbose:
+            logger.setLevel(logging.DEBUG)
 
         # Parse extensions filter
         if options.extensions:
@@ -853,39 +857,35 @@ class MediaIntegrityCheck(TackleFactory):
             )
 
         exit_code = result.returncode
-        stderr = result.stderr[:500] if result.stderr else None
+        stderr = result.stderr[:1500] if result.stderr else None
 
         # 3. Log stdout/stderr
         if self.verbose:
             logger.debug('  Return code: %d', result.returncode)
             if result.stdout.strip():
                 # Truncate long output
-                stdout = result.stdout.strip()[:500]
+                stdout = result.stdout.strip()[:1500]
                 logger.debug('  stdout: %s', stdout)
             if result.stderr.strip():
-                stderr_log = result.stderr.strip()[:500]
+                stderr_log = result.stderr.strip()[:1500]
                 logger.debug('  stderr: %s', stderr_log)
 
         # Check for success based on exit code
         is_valid = exit_code in config.success_codes
 
-        # 4. Log decision policy
-        if not is_valid:
-            if self.verbose:
-                logger.debug(
-                    '  Decision: CORRUPT - exit code %d not in success codes %s',
-                    result.returncode, config.success_codes
-                )
-            return ValidationOutcome(
-                entry=entry,
-                result=ValidationResult.CORRUPT,
-                tool=binary,
-                exit_code=exit_code,
-                stderr_snippet=stderr,
-            )
-
         # Check stderr patterns (for DEFAULT and PEDANTIC levels)
         if self.check_level != CheckLevel.BASIC and config.check_stderr:
+            if result.stderr and not re.search(config.check_stderr, result.stderr):
+                logger.warning(
+                    'Tool report While processing: %s (size=%s, ext=%s)',
+                    entry.path,
+                    self._format_size(entry.size) if entry.size else 'unknown',
+                    ext or 'none'
+                )
+                logger.warning(
+                        '  STDERR: NOT EMPTY, but took valid decision - stderr\n%r\n not matched pattern %r',
+                        result.stderr, config.check_stderr
+                    )
             if result.stderr and re.search(config.check_stderr, result.stderr):
                 if self.verbose:
                     logger.debug(
@@ -901,6 +901,50 @@ class MediaIntegrityCheck(TackleFactory):
                 )
             elif self.verbose:
                 logger.debug('  Stderr pattern check: no match (OK)')
+
+        # Check stdout patterns (for DEFAULT and PEDANTIC levels)
+        if self.check_level != CheckLevel.BASIC and config.check_stdout:
+            if result.stdout and not re.search(config.check_stdout, result.stdout):
+                logger.warning(
+                    'Tool report While processing: %s (size=%s, ext=%s)',
+                    entry.path,
+                    self._format_size(entry.size) if entry.size else 'unknown',
+                    ext or 'none'
+                )
+                logger.warning(
+                        '  STDOUT: NOT EMPTY, but took valid decision - stdout\n%r\n not matched pattern %r',
+                        result.stdout, config.check_stdout
+                    )
+            if result.stdout and re.search(config.check_stdout, result.stdout):
+                if self.verbose:
+                    logger.debug(
+                        '  Decision: CORRUPT - stdout matched pattern %r',
+                        config.check_stdout
+                    )
+                return ValidationOutcome(
+                    entry=entry,
+                    result=ValidationResult.CORRUPT,
+                    tool=binary,
+                    exit_code=exit_code,
+                    stderr_snippet=stdout,
+                )
+            elif self.verbose:
+                logger.debug('  Stdout pattern check: no match (OK)')
+
+        # 4. Check basic decision
+        if config.check_stderr is None and not is_valid:
+            if self.verbose:
+                logger.debug(
+                    '  Decision: CORRUPT - exit code %d not in success codes %s',
+                    result.returncode, config.success_codes
+                )
+            return ValidationOutcome(
+                entry=entry,
+                result=ValidationResult.CORRUPT,
+                tool=binary,
+                exit_code=exit_code,
+                stderr_snippet=stderr,
+            )
 
         if self.verbose:
             logger.debug('  Decision: VALID')
