@@ -467,11 +467,17 @@ DEBUG_LOG_COLUMNS: Tuple[str, ...] = (
 # DebugLogWriter — streaming CSV writer for debug output
 # ---------------------------------------------------------------------------
 
-class DebugLogWriter:
+from common.streaming_csv import StreamingCsvWriter
+
+
+class DebugLogWriter(StreamingCsvWriter[DebugRecord]):
     """Streaming CSV writer for debug log output.
     
     Writes DebugRecord entries to a CSV file with proper string escaping,
     preserving newlines and special characters.
+    
+    Uses eager open mode (lazy_open=False) with flush-on-write for reliable
+    debug logging. The file and header are created when open() is called.
     """
     
     def __init__(self, path: str):
@@ -480,27 +486,16 @@ class DebugLogWriter:
         Args:
             path: Path to the output CSV file.
         """
-        self.path = path
-        self._fh: Optional[TextIO] = None
-        self._writer: Optional[csv.writer] = None
+        super().__init__(
+            path,
+            header=DEBUG_LOG_COLUMNS,
+            lazy_open=False,
+            flush_on_write=True,
+        )
     
-    def open(self) -> None:
-        """Open the CSV file and write the header row."""
-        self._fh = open(self.path, 'w', newline='', encoding='utf-8')
-        self._writer = csv.writer(self._fh)
-        self._writer.writerow(DEBUG_LOG_COLUMNS)
-        self._fh.flush()
-    
-    def write(self, record: DebugRecord) -> None:
-        """Write a single DebugRecord to the CSV file.
-        
-        Args:
-            record: The DebugRecord to write.
-        """
-        if self._writer is None:
-            raise RuntimeError('DebugLogWriter not opened. Call open() first.')
-        
-        row = [
+    def _to_row(self, record: DebugRecord) -> List[str]:
+        """Convert a DebugRecord to a list of CSV column values."""
+        return [
             record.file_path,
             str(record.file_size) if record.file_size is not None else '',
             record.file_extension,
@@ -520,33 +515,17 @@ class DebugLogWriter:
             record.error_message or '',
             str(record.duration_ms) if record.duration_ms is not None else '',
         ]
-        self._writer.writerow(row)
-        self._fh.flush()
-    
-    def close(self) -> None:
-        """Close the CSV file."""
-        if self._fh is not None:
-            self._fh.close()
-            self._fh = None
-            self._writer = None
-    
-    def __enter__(self) -> 'DebugLogWriter':
-        self.open()
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.close()
 
 
 # ---------------------------------------------------------------------------
 # StreamingListingWriter — memory-efficient CSV writer for result listings
 # ---------------------------------------------------------------------------
 
-class StreamingListingWriter:
+class StreamingListingWriter(StreamingCsvWriter[FileEntry]):
     """Streaming CSV writer for FileEntry listings.
     
     Writes entries line-by-line to avoid memory accumulation.
-    Only creates the file if at least one entry is written.
+    Uses lazy open mode — file is created only on first write.
     """
     
     def __init__(self, path: str, attr_map: Optional[Dict[str, str]] = None):
@@ -556,46 +535,17 @@ class StreamingListingWriter:
             path: Path to the output CSV file.
             attr_map: Column mapping for FileEntry serialization.
         """
-        self.path = path
+        super().__init__(
+            path,
+            header=None,  # No header for listing files
+            lazy_open=True,
+            flush_on_write=False,
+        )
         self.attr_map = attr_map or CANONICAL_MAP
-        self._fh: Optional[TextIO] = None
-        self._writer: Optional[csv.writer] = None
-        self._count: int = 0
     
-    def _ensure_open(self) -> None:
-        """Open the file on first write."""
-        if self._fh is None:
-            self._fh = open(self.path, 'w', newline='', encoding='utf-8')
-            self._writer = csv.writer(self._fh)
-    
-    def write(self, entry: FileEntry) -> None:
-        """Write a single FileEntry to the CSV file.
-        
-        Args:
-            entry: The FileEntry to write.
-        """
-        self._ensure_open()
-        row = entry.to_listing_row(self.attr_map)
-        self._writer.writerow(row)
-        self._count += 1
-    
-    @property
-    def count(self) -> int:
-        """Return the number of entries written."""
-        return self._count
-    
-    def close(self) -> None:
-        """Close the CSV file if it was opened."""
-        if self._fh is not None:
-            self._fh.close()
-            self._fh = None
-            self._writer = None
-    
-    def __enter__(self) -> 'StreamingListingWriter':
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.close()
+    def _to_row(self, entry: FileEntry) -> List[str]:
+        """Convert a FileEntry to a list of CSV column values."""
+        return entry.to_listing_row(self.attr_map)
 
 
 # ---------------------------------------------------------------------------
