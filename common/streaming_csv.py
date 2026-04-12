@@ -190,8 +190,8 @@ class StreamingListingWriter(StreamingCsvWriter[FileEntry]):
         super().__init__(
             path,
             header=header,
-            lazy_open=True,
-            flush_on_write=True,
+            lazy_open=lazy_open,
+            flush_on_write=flush_on_write,
         )
     
     @staticmethod

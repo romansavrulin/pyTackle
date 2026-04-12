@@ -809,7 +809,7 @@ class MediaIntegrityCheck(TackleFactory):
                     # Get the appropriate writer from the result map
                     writer = result_map.get(outcome.result)
                     if writer:
-                        writer.write(outcome)
+                        writer.write(outcome.entry)
 
                     # Write to debug log if enabled
                     if debug_writer and outcome.debug_record:
