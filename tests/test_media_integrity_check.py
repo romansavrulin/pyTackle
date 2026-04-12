@@ -406,12 +406,12 @@ class TestSpecialCases:
         assert 3 in config.success_codes
         assert 0 in config.success_codes
 
-    def test_ogg_has_stderr_check(self):
-        """OGG files should have stderr checking for errors."""
+    def test_ogg_has_stdout_check(self):
+        """OGG files should have stdout checking for errors."""
         config = get_tool_config('.ogg')
         assert config is not None
-        assert config.check_stderr is not None
-        assert 'error' in config.check_stderr.lower()
+        assert config.check_stdout is not None
+        assert 'error' in config.check_stdout.lower()
 
     def test_opus_has_stderr_check(self):
         """Opus files should have stderr checking for errors."""
@@ -432,14 +432,14 @@ class TestSpecialCases:
 
     def test_some_tools_have_no_stderr_check(self):
         """Some tools should not have stderr check (rely on exit code only)."""
-        # pngcheck, flac, mp3val, tar, gzip, etc. only use exit codes
-        config = get_tool_config('.png')
-        assert config.check_stderr is None
-
+        # flac, mp3val, tar, gzip, etc. only use exit codes
         config = get_tool_config('.flac')
         assert config.check_stderr is None
 
         config = get_tool_config('.pdf')
+        assert config.check_stderr is None
+
+        config = get_tool_config('.tar')
         assert config.check_stderr is None
 
 
@@ -576,8 +576,8 @@ class TestOggOpusStderrDetection:
 
     @patch('subprocess.run')
     @patch('tackles.MediaIntegrityCheck.check_tool_available')
-    def test_ogg_stderr_with_error_is_corrupt(self, mock_available, mock_run, mock_media_check, tmp_path):
-        """OGG file with 'error' in stderr should be CORRUPT even with exit 0."""
+    def test_ogg_stdout_with_error_is_corrupt(self, mock_available, mock_run, mock_media_check, tmp_path):
+        """OGG file with 'error' in stdout should be CORRUPT even with exit 0."""
         from common.FileEntry import FileEntry
 
         test_file = tmp_path / 'test.ogg'
@@ -585,7 +585,7 @@ class TestOggOpusStderrDetection:
         entry = FileEntry.from_fs_path(str(test_file))
 
         mock_available.return_value = True
-        mock_run.return_value = MagicMock(returncode=0, stderr='Warning: error in stream data')
+        mock_run.return_value = MagicMock(returncode=0, stdout='Warning: error in stream data', stderr='')
 
         outcome = mock_media_check._validate_single(mock_media_check, entry)
 
@@ -593,8 +593,8 @@ class TestOggOpusStderrDetection:
 
     @patch('subprocess.run')
     @patch('tackles.MediaIntegrityCheck.check_tool_available')
-    def test_ogg_stderr_without_error_is_valid(self, mock_available, mock_run, mock_media_check, tmp_path):
-        """OGG file without 'error' in stderr should be VALID."""
+    def test_ogg_stdout_without_error_is_valid(self, mock_available, mock_run, mock_media_check, tmp_path):
+        """OGG file without 'error' in stdout should be VALID."""
         from common.FileEntry import FileEntry
 
         test_file = tmp_path / 'test.ogg'
@@ -602,7 +602,7 @@ class TestOggOpusStderrDetection:
         entry = FileEntry.from_fs_path(str(test_file))
 
         mock_available.return_value = True
-        mock_run.return_value = MagicMock(returncode=0, stderr='Processing complete')
+        mock_run.return_value = MagicMock(returncode=0, stdout='Processing complete', stderr='')
 
         outcome = mock_media_check._validate_single(mock_media_check, entry)
 
@@ -1099,11 +1099,12 @@ class TestAllSupportedExtensions:
         assert config is not None
         assert config.binary == 'flac'
 
-    def test_png_uses_pngcheck(self):
-        """PNG should use pngcheck."""
+    def test_png_uses_identify(self):
+        """PNG should use identify (imagemagick)."""
         config = get_tool_config('.png')
         assert config is not None
-        assert config.binary == 'pngcheck'
+        assert config.binary == 'identify'
+        assert config.apt_package == 'imagemagick'
 
     def test_7z_uses_7z(self):
         """.7z should use 7z binary."""
@@ -1181,13 +1182,14 @@ class TestStderrPatterns:
         """Tools with reliable exit codes should not need check_stderr."""
         # These tools return reliable exit codes, so no stderr pattern needed
         assert get_tool_config('.flac').check_stderr is None
-        assert get_tool_config('.png').check_stderr is None
         assert get_tool_config('.pdf').check_stderr is None
         assert get_tool_config('.tar').check_stderr is None
 
-    def test_ogg_opus_have_check_stderr(self):
-        """OGG and Opus tools should have check_stderr for error detection."""
-        assert get_tool_config('.ogg').check_stderr is not None
+    def test_ogg_has_check_stdout_opus_has_check_stderr(self):
+        """OGG uses check_stdout, Opus uses check_stderr for error detection."""
+        # OGG uses check_stdout because ogginfo outputs to stdout
+        assert get_tool_config('.ogg').check_stdout is not None
+        # Opus uses check_stderr
         assert get_tool_config('.opus').check_stderr is not None
 
 
@@ -1448,7 +1450,7 @@ class TestStderrPatternMatching:
         import re
 
         config = get_tool_config('.ogg')
-        pattern = config.check_stderr
+        pattern = config.check_stdout
         assert pattern is not None
 
         assert re.search(pattern, 'error in stream')
@@ -1460,7 +1462,7 @@ class TestStderrPatternMatching:
         import re
 
         config = get_tool_config('.ogg')
-        pattern = config.check_stderr
+        pattern = config.check_stdout
         assert pattern is not None
 
         assert re.search(pattern, 'error')
@@ -1549,7 +1551,7 @@ class TestArgsAfterFile:
         config = get_tool_config('.djvu')
         assert config is not None
         assert hasattr(config, 'args_after_file')
-        assert '/dev/null' in config.args_after_file
+        assert '/tmp/pyTackle-ddujvu.tiff' in config.args_after_file
 
     def test_most_tools_have_empty_args_after_file(self):
         """Most tools don't need args after file."""
