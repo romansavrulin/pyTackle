@@ -554,14 +554,30 @@ class StreamingListingWriter(StreamingCsvWriter[FileEntry]):
 
 @dataclass
 class ValidationOutcome:
-    """Detailed outcome of validating a single file."""
+    """Detailed outcome of validating a single file.
+    
+    Contains all information from the validation execution context:
+    - File metadata (via entry)
+    - Tool used and command executed
+    - Exit code and output (stdout/stderr)
+    - Decision result and reasoning
+    - Full debug record (when --debug-log is enabled)
+    """
     entry: FileEntry
     result: ValidationResult
     tool: Optional[str] = None
+    tool_package: Optional[str] = None      # apt package for the tool
+    command: Optional[str] = None           # Full command that was executed
     exit_code: Optional[int] = None
-    stderr_snippet: Optional[str] = None
-    stdout_snippet: Optional[str] = None
-    error_message: Optional[str] = None
+    stderr_snippet: Optional[str] = None    # Truncated stderr (first 2000 chars)
+    stdout_snippet: Optional[str] = None    # Truncated stdout (first 2000 chars)
+    stderr_regex: Optional[str] = None      # Regex used for stderr checking
+    stdout_regex: Optional[str] = None      # Regex used for stdout checking
+    stderr_matched: Optional[bool] = None   # Whether stderr matched the error pattern
+    stdout_matched: Optional[bool] = None   # Whether stdout matched the error pattern
+    error_message: Optional[str] = None     # Human-readable error description
+    decision_reason: Optional[str] = None   # Why this result was chosen
+    duration_ms: Optional[float] = None     # Validation time in milliseconds
     # Debug data (cleared after writing to debug log for memory efficiency)
     debug_record: Optional[DebugRecord] = None
 
@@ -969,18 +985,23 @@ class MediaIntegrityCheck(TackleFactory):
 
         # No validator for this extension
         if config is None:
+            duration = (time.monotonic() - start_time) * 1000
+            decision_reason = 'No validator defined for this file extension'
+            
             if self.verbose:
                 logger.debug('  Decision: UNTESTABLE - no validator for extension')
             
             if debug_record:
                 debug_record.result = 'UNTESTABLE'
-                debug_record.decision_reason = 'No validator defined for this file extension'
-                debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+                debug_record.decision_reason = decision_reason
+                debug_record.duration_ms = duration
             
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.UNTESTABLE,
-                error_message='No validator defined for this file extension',
+                error_message=decision_reason,
+                decision_reason=decision_reason,
+                duration_ms=duration,
                 debug_record=debug_record,
             )
 
@@ -1014,20 +1035,29 @@ class MediaIntegrityCheck(TackleFactory):
 
         # Check if tool is available
         if not check_tool_available(binary):
+            duration = (time.monotonic() - start_time) * 1000
+            decision_reason = f'Tool not installed: {binary}'
+            error_msg = f'Tool not installed: {binary} (apt-get install {config.apt_package})'
+            
             if self.verbose:
                 logger.debug('  Decision: TOOL_MISSING - %s not installed', binary)
             
             if debug_record:
                 debug_record.result = 'TOOL_MISSING'
-                debug_record.decision_reason = f'Tool not installed: {binary}'
+                debug_record.decision_reason = decision_reason
                 debug_record.error_message = f'apt-get install {config.apt_package}'
-                debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+                debug_record.duration_ms = duration
             
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_MISSING,
                 tool=binary,
-                error_message=f'Tool not installed: {binary} (apt-get install {config.apt_package})',
+                tool_package=config.apt_package,
+                stderr_regex=config.check_stderr,
+                stdout_regex=config.check_stdout,
+                error_message=error_msg,
+                decision_reason=decision_reason,
+                duration_ms=duration,
                 debug_record=debug_record,
             )
 
@@ -1053,60 +1083,90 @@ class MediaIntegrityCheck(TackleFactory):
                 text=True,
             )
         except subprocess.TimeoutExpired:
+            duration = (time.monotonic() - start_time) * 1000
+            decision_reason = f'Timeout after {self.timeout}s'
+            error_msg = f'Validation timed out after {self.timeout}s'
+            
             if self.verbose:
                 logger.debug('  Decision: TOOL_ERROR - timeout after %ds', self.timeout)
             
             if debug_record:
                 debug_record.result = 'TOOL_ERROR'
-                debug_record.decision_reason = f'Timeout after {self.timeout}s'
-                debug_record.error_message = f'Validation timed out after {self.timeout}s'
-                debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+                debug_record.decision_reason = decision_reason
+                debug_record.error_message = error_msg
+                debug_record.duration_ms = duration
             
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_ERROR,
                 tool=binary,
-                error_message=f'Validation timed out after {self.timeout}s',
+                tool_package=config.apt_package,
+                command=cmd_str,
+                stderr_regex=config.check_stderr,
+                stdout_regex=config.check_stdout,
+                error_message=error_msg,
+                decision_reason=decision_reason,
+                duration_ms=duration,
                 debug_record=debug_record,
             )
         except OSError as exc:
+            duration = (time.monotonic() - start_time) * 1000
+            decision_reason = 'OSError during tool execution'
+            error_msg = str(exc)
+            
             if self.verbose:
                 logger.debug('  Decision: TOOL_ERROR - %s', exc)
             
             if debug_record:
                 debug_record.result = 'TOOL_ERROR'
-                debug_record.decision_reason = 'OSError during tool execution'
-                debug_record.error_message = str(exc)
-                debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+                debug_record.decision_reason = decision_reason
+                debug_record.error_message = error_msg
+                debug_record.duration_ms = duration
             
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_ERROR,
                 tool=binary,
-                error_message=str(exc),
+                tool_package=config.apt_package,
+                command=cmd_str,
+                stderr_regex=config.check_stderr,
+                stdout_regex=config.check_stdout,
+                error_message=error_msg,
+                decision_reason=decision_reason,
+                duration_ms=duration,
                 debug_record=debug_record,
             )
         except Exception as exc:
+            duration = (time.monotonic() - start_time) * 1000
+            decision_reason = 'Unexpected exception during tool execution'
+            error_msg = f'Unexpected error: {exc}'
+            
             if self.verbose:
                 logger.debug('  Decision: TOOL_ERROR - unexpected: %s', exc)
             
             if debug_record:
                 debug_record.result = 'TOOL_ERROR'
-                debug_record.decision_reason = 'Unexpected exception during tool execution'
-                debug_record.error_message = f'Unexpected error: {exc}'
-                debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+                debug_record.decision_reason = decision_reason
+                debug_record.error_message = error_msg
+                debug_record.duration_ms = duration
             
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_ERROR,
                 tool=binary,
-                error_message=f'Unexpected error: {exc}',
+                tool_package=config.apt_package,
+                command=cmd_str,
+                stderr_regex=config.check_stderr,
+                stdout_regex=config.check_stdout,
+                error_message=error_msg,
+                decision_reason=decision_reason,
+                duration_ms=duration,
                 debug_record=debug_record,
             )
 
         exit_code = result.returncode
-        stderr = result.stderr[:1500] if result.stderr else None
-        stdout = result.stdout[:1500] if result.stdout else None
+        stderr = result.stderr[:2000] if result.stderr else None
+        stdout = result.stdout[:2000] if result.stdout else None
 
         # Update debug record with execution results
         if debug_record:
@@ -1144,6 +1204,9 @@ class MediaIntegrityCheck(TackleFactory):
                     )
             if result.stderr and re.search(config.check_stderr, result.stderr):
                 stderr_matched = True
+                duration = (time.monotonic() - start_time) * 1000
+                decision_reason = f'stderr matched pattern: {config.check_stderr}'
+                
                 if debug_record:
                     debug_record.stderr_matched = True
                 if self.verbose:
@@ -1154,15 +1217,24 @@ class MediaIntegrityCheck(TackleFactory):
                 
                 if debug_record:
                     debug_record.result = 'CORRUPT'
-                    debug_record.decision_reason = f'stderr matched pattern: {config.check_stderr}'
-                    debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+                    debug_record.decision_reason = decision_reason
+                    debug_record.duration_ms = duration
                 
                 return ValidationOutcome(
                     entry=entry,
                     result=ValidationResult.CORRUPT,
                     tool=binary,
+                    tool_package=config.apt_package,
+                    command=cmd_str,
                     exit_code=exit_code,
                     stderr_snippet=stderr,
+                    stdout_snippet=stdout,
+                    stderr_regex=config.check_stderr,
+                    stdout_regex=config.check_stdout,
+                    stderr_matched=True,
+                    stdout_matched=stdout_matched if config.check_stdout else None,
+                    decision_reason=decision_reason,
+                    duration_ms=duration,
                     debug_record=debug_record,
                 )
             elif self.verbose:
@@ -1187,6 +1259,9 @@ class MediaIntegrityCheck(TackleFactory):
                     )
             if result.stdout and re.search(config.check_stdout, result.stdout):
                 stdout_matched = True
+                duration = (time.monotonic() - start_time) * 1000
+                decision_reason = f'stdout matched pattern: {config.check_stdout}'
+                
                 if debug_record:
                     debug_record.stdout_matched = True
                 if self.verbose:
@@ -1197,16 +1272,24 @@ class MediaIntegrityCheck(TackleFactory):
                 
                 if debug_record:
                     debug_record.result = 'CORRUPT'
-                    debug_record.decision_reason = f'stdout matched pattern: {config.check_stdout}'
-                    debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+                    debug_record.decision_reason = decision_reason
+                    debug_record.duration_ms = duration
                 
                 return ValidationOutcome(
                     entry=entry,
                     result=ValidationResult.CORRUPT,
                     tool=binary,
+                    tool_package=config.apt_package,
+                    command=cmd_str,
                     exit_code=exit_code,
                     stdout_snippet=stdout,
                     stderr_snippet=stderr,
+                    stderr_regex=config.check_stderr,
+                    stdout_regex=config.check_stdout,
+                    stderr_matched=stderr_matched if config.check_stderr else None,
+                    stdout_matched=True,
+                    decision_reason=decision_reason,
+                    duration_ms=duration,
                     debug_record=debug_record,
                 )
             elif self.verbose:
@@ -1217,6 +1300,9 @@ class MediaIntegrityCheck(TackleFactory):
 
         # 4. Check basic decision
         if not is_valid:
+            duration = (time.monotonic() - start_time) * 1000
+            decision_reason = f'exit code {exit_code} not in success codes {config.success_codes}'
+            
             if self.verbose:
                 logger.debug(
                     '  Decision: CORRUPT - exit code %d not in success codes %s',
@@ -1225,32 +1311,54 @@ class MediaIntegrityCheck(TackleFactory):
             
             if debug_record:
                 debug_record.result = 'CORRUPT'
-                debug_record.decision_reason = f'exit code {exit_code} not in success codes {config.success_codes}'
-                debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+                debug_record.decision_reason = decision_reason
+                debug_record.duration_ms = duration
             
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.CORRUPT,
                 tool=binary,
+                tool_package=config.apt_package,
+                command=cmd_str,
                 exit_code=exit_code,
                 stderr_snippet=stderr,
+                stdout_snippet=stdout,
+                stderr_regex=config.check_stderr,
+                stdout_regex=config.check_stdout,
+                stderr_matched=stderr_matched if config.check_stderr else None,
+                stdout_matched=stdout_matched if config.check_stdout else None,
+                decision_reason=decision_reason,
+                duration_ms=duration,
                 debug_record=debug_record,
             )
 
+        # 5. VALID result
+        duration = (time.monotonic() - start_time) * 1000
+        decision_reason = f'exit code {exit_code} in success codes, no error patterns matched'
+        
         if self.verbose:
             logger.debug('  Decision: VALID')
 
         if debug_record:
             debug_record.result = 'VALID'
-            debug_record.decision_reason = f'exit code {exit_code} in success codes, no error patterns matched'
-            debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+            debug_record.decision_reason = decision_reason
+            debug_record.duration_ms = duration
 
         return ValidationOutcome(
             entry=entry,
             result=ValidationResult.VALID,
             tool=binary,
+            tool_package=config.apt_package,
+            command=cmd_str,
             exit_code=exit_code,
             stderr_snippet=stderr,
+            stdout_snippet=stdout,
+            stderr_regex=config.check_stderr,
+            stdout_regex=config.check_stdout,
+            stderr_matched=stderr_matched if config.check_stderr else None,
+            stdout_matched=stdout_matched if config.check_stdout else None,
+            decision_reason=decision_reason,
+            duration_ms=duration,
             debug_record=debug_record,
         )
 
