@@ -766,8 +766,15 @@ class MediaIntegrityCheck(TackleFactory):
         debug_writer: Optional[DebugLogWriter] = None
         if self.debug_log_path:
             debug_writer = DebugLogWriter(self.debug_log_path)
-            debug_writer.open()
             logger.info('Debug log: %s', self.debug_log_path)
+
+        result_map = {
+            ValidationResult.VALID: ok_writer,
+            ValidationResult.CORRUPT: broken_writer,
+            ValidationResult.UNTESTABLE: untestable_writer,
+            ValidationResult.TOOL_MISSING: missing_tool_writer,
+            ValidationResult.TOOL_ERROR: error_writer,
+        }
 
         try:
             # 5. Validate files with streaming output
@@ -786,55 +793,50 @@ class MediaIntegrityCheck(TackleFactory):
                 ValidationResult.TOOL_ERROR: 0,
             }
 
-            for entry in entries:
-                # Validate file (now includes debug_record if debug_log is enabled)
-                outcome = self._validate_single(entry, create_debug_record=(debug_writer is not None))
-                
-                # Write to appropriate output file immediately
-                if outcome.result == ValidationResult.VALID:
-                    ok_writer.write(outcome.entry)
-                elif outcome.result == ValidationResult.CORRUPT:
-                    broken_writer.write(outcome.entry)
-                elif outcome.result == ValidationResult.UNTESTABLE:
-                    untestable_writer.write(outcome.entry)
-                elif outcome.result == ValidationResult.TOOL_MISSING:
-                    missing_tool_writer.write(outcome.entry)
-                elif outcome.result == ValidationResult.TOOL_ERROR:
-                    error_writer.write(outcome.entry)
+            with ( 
+                ok_writer, 
+                broken_writer, 
+                untestable_writer, 
+                missing_tool_writer, 
+                error_writer,
+                debug_writer
+            ):
 
-                # Write to debug log if enabled
-                if debug_writer and outcome.debug_record:
-                    debug_writer.write(outcome.debug_record)
-                    # Clear debug data to free memory
-                    outcome.debug_record = None
+                for entry in entries:
+                    # Validate file (now includes debug_record if debug_log is enabled)
+                    outcome = self._validate_single(entry, create_debug_record=(debug_writer is not None))
 
-                counts[outcome.result] += 1
-                processed += 1
+                    # Get the appropriate writer from the result map
+                    writer = result_map.get(outcome.result)
+                    if writer:
+                        writer.write(outcome)
 
-                # Time-based progress with stats
-                now = time.monotonic()
-                if now - last_progress >= progress_interval:
-                    pct = (processed / total) * 100
-                    logger.info(
-                        'Progress: %d/%d (%.1f%%) | OK: %d | Broken: %d | Untestable: %d | Missing tool: %d | Errors: %d',
-                        processed, total, pct,
-                        counts[ValidationResult.VALID],
-                        counts[ValidationResult.CORRUPT],
-                        counts[ValidationResult.UNTESTABLE],
-                        counts[ValidationResult.TOOL_MISSING],
-                        counts[ValidationResult.TOOL_ERROR],
-                    )
-                    last_progress = now
+                    # Write to debug log if enabled
+                    if debug_writer and outcome.debug_record:
+                        debug_writer.write(outcome.debug_record)
+                        # Clear debug data to free memory
+                        outcome.debug_record = None
+
+                    counts[outcome.result] += 1
+                    processed += 1
+
+                    # Time-based progress with stats
+                    now = time.monotonic()
+                    if now - last_progress >= progress_interval:
+                        pct = (processed / total) * 100
+                        logger.info(
+                            'Progress: %d/%d (%.1f%%) | OK: %d | Broken: %d | Untestable: %d | Missing tool: %d | Errors: %d',
+                            processed, total, pct,
+                            counts[ValidationResult.VALID],
+                            counts[ValidationResult.CORRUPT],
+                            counts[ValidationResult.UNTESTABLE],
+                            counts[ValidationResult.TOOL_MISSING],
+                            counts[ValidationResult.TOOL_ERROR],
+                        )
+                        last_progress = now
 
         finally:
-            # 6. Close all writers
-            ok_writer.close()
-            broken_writer.close()
-            untestable_writer.close()
-            missing_tool_writer.close()
-            error_writer.close()
-            if debug_writer:
-                debug_writer.close()
+            pass
 
         # 7. Summary
         logger.info('=' * 60)
@@ -847,18 +849,12 @@ class MediaIntegrityCheck(TackleFactory):
         logger.info('=' * 60)
         
         # Output file paths (only show files that were actually created)
-        if ok_writer.count:
-            logger.info('  Output: %s (%d entries)', ok_path, ok_writer.count)
-        if broken_writer.count:
-            logger.info('  Output: %s (%d entries)', broken_path, broken_writer.count)
-        if untestable_writer.count:
-            logger.info('  Output: %s (%d entries)', untestable_path, untestable_writer.count)
-        if missing_tool_writer.count:
-            logger.info('  Output: %s (%d entries)', missing_tool_path, missing_tool_writer.count)
-        if error_writer.count:
-            logger.info('  Output: %s (%d entries)', error_path, error_writer.count)
-        if self.debug_log_path:
-            logger.info('  Debug log: %s', self.debug_log_path)
+        logger.info('  Output: %s (%d entries)', ok_path, ok_writer.count)
+        logger.info('  Output: %s (%d entries)', broken_path, broken_writer.count)
+        logger.info('  Output: %s (%d entries)', untestable_path, untestable_writer.count)
+        logger.info('  Output: %s (%d entries)', missing_tool_path, missing_tool_writer.count)
+        logger.info('  Output: %s (%d entries)', error_path, error_writer.count)
+        logger.info('  Debug log: %s', self.debug_log_path)
 
         # Return 1 if any corrupt files found, 0 otherwise
         return 1 if broken_writer.count > 0 else 0
