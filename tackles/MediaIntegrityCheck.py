@@ -8,6 +8,7 @@ Platform Restriction: Linux/WSL only — relies on Linux-native tools like
 ffprobe, jpeginfo, mp3val, etc.
 """
 
+import csv
 import logging
 import os
 import re
@@ -17,10 +18,11 @@ import sys
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, TextIO
 
 from common.FileEntry import FileEntry
 from common.listing import write_listing
+from common.attr_map import CANONICAL_MAP
 from tackles.TackleFactory import TackleFactory
 
 logging.basicConfig(
@@ -395,6 +397,208 @@ def get_missing_packages() -> Set[str]:
 
 
 # ---------------------------------------------------------------------------
+# DebugRecord dataclass — structured debug output
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DebugRecord:
+    """Structured debug data for a single file validation.
+    
+    Contains all information needed for debugging: file metadata, tool info,
+    command executed, outputs, regex patterns, and the decision made.
+    """
+    # File information
+    file_path: str
+    file_size: Optional[int] = None
+    file_extension: str = ''
+    
+    # Tool information
+    tool_binary: Optional[str] = None
+    tool_package: Optional[str] = None
+    command: Optional[str] = None
+    
+    # Validation mode
+    check_level: str = ''
+    
+    # Tool execution results
+    exit_code: Optional[int] = None
+    stdout: Optional[str] = None
+    stderr: Optional[str] = None
+    
+    # Pattern matching
+    stderr_regex: Optional[str] = None
+    stdout_regex: Optional[str] = None
+    stderr_matched: Optional[bool] = None
+    stdout_matched: Optional[bool] = None
+    
+    # Decision
+    result: str = ''
+    decision_reason: str = ''
+    error_message: Optional[str] = None
+    
+    # Timing
+    duration_ms: Optional[float] = None
+
+
+# Debug log CSV column names (in order)
+DEBUG_LOG_COLUMNS: Tuple[str, ...] = (
+    'file_path',
+    'file_size',
+    'file_extension',
+    'tool_binary',
+    'tool_package',
+    'command',
+    'check_level',
+    'exit_code',
+    'stdout',
+    'stderr',
+    'stderr_regex',
+    'stdout_regex',
+    'stderr_matched',
+    'stdout_matched',
+    'result',
+    'decision_reason',
+    'error_message',
+    'duration_ms',
+)
+
+
+# ---------------------------------------------------------------------------
+# DebugLogWriter — streaming CSV writer for debug output
+# ---------------------------------------------------------------------------
+
+class DebugLogWriter:
+    """Streaming CSV writer for debug log output.
+    
+    Writes DebugRecord entries to a CSV file with proper string escaping,
+    preserving newlines and special characters.
+    """
+    
+    def __init__(self, path: str):
+        """Initialize the debug log writer.
+        
+        Args:
+            path: Path to the output CSV file.
+        """
+        self.path = path
+        self._fh: Optional[TextIO] = None
+        self._writer: Optional[csv.writer] = None
+    
+    def open(self) -> None:
+        """Open the CSV file and write the header row."""
+        self._fh = open(self.path, 'w', newline='', encoding='utf-8')
+        self._writer = csv.writer(self._fh)
+        self._writer.writerow(DEBUG_LOG_COLUMNS)
+        self._fh.flush()
+    
+    def write(self, record: DebugRecord) -> None:
+        """Write a single DebugRecord to the CSV file.
+        
+        Args:
+            record: The DebugRecord to write.
+        """
+        if self._writer is None:
+            raise RuntimeError('DebugLogWriter not opened. Call open() first.')
+        
+        row = [
+            record.file_path,
+            str(record.file_size) if record.file_size is not None else '',
+            record.file_extension,
+            record.tool_binary or '',
+            record.tool_package or '',
+            record.command or '',
+            record.check_level,
+            str(record.exit_code) if record.exit_code is not None else '',
+            record.stdout or '',
+            record.stderr or '',
+            record.stderr_regex or '',
+            record.stdout_regex or '',
+            str(record.stderr_matched) if record.stderr_matched is not None else '',
+            str(record.stdout_matched) if record.stdout_matched is not None else '',
+            record.result,
+            record.decision_reason,
+            record.error_message or '',
+            str(record.duration_ms) if record.duration_ms is not None else '',
+        ]
+        self._writer.writerow(row)
+        self._fh.flush()
+    
+    def close(self) -> None:
+        """Close the CSV file."""
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
+            self._writer = None
+    
+    def __enter__(self) -> 'DebugLogWriter':
+        self.open()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+
+# ---------------------------------------------------------------------------
+# StreamingListingWriter — memory-efficient CSV writer for result listings
+# ---------------------------------------------------------------------------
+
+class StreamingListingWriter:
+    """Streaming CSV writer for FileEntry listings.
+    
+    Writes entries line-by-line to avoid memory accumulation.
+    Only creates the file if at least one entry is written.
+    """
+    
+    def __init__(self, path: str, attr_map: Optional[Dict[str, str]] = None):
+        """Initialize the streaming listing writer.
+        
+        Args:
+            path: Path to the output CSV file.
+            attr_map: Column mapping for FileEntry serialization.
+        """
+        self.path = path
+        self.attr_map = attr_map or CANONICAL_MAP
+        self._fh: Optional[TextIO] = None
+        self._writer: Optional[csv.writer] = None
+        self._count: int = 0
+    
+    def _ensure_open(self) -> None:
+        """Open the file on first write."""
+        if self._fh is None:
+            self._fh = open(self.path, 'w', newline='', encoding='utf-8')
+            self._writer = csv.writer(self._fh)
+    
+    def write(self, entry: FileEntry) -> None:
+        """Write a single FileEntry to the CSV file.
+        
+        Args:
+            entry: The FileEntry to write.
+        """
+        self._ensure_open()
+        row = entry.to_listing_row(self.attr_map)
+        self._writer.writerow(row)
+        self._count += 1
+    
+    @property
+    def count(self) -> int:
+        """Return the number of entries written."""
+        return self._count
+    
+    def close(self) -> None:
+        """Close the CSV file if it was opened."""
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
+            self._writer = None
+    
+    def __enter__(self) -> 'StreamingListingWriter':
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+
+# ---------------------------------------------------------------------------
 # ValidationOutcome dataclass
 # ---------------------------------------------------------------------------
 
@@ -406,7 +610,10 @@ class ValidationOutcome:
     tool: Optional[str] = None
     exit_code: Optional[int] = None
     stderr_snippet: Optional[str] = None
+    stdout_snippet: Optional[str] = None
     error_message: Optional[str] = None
+    # Debug data (cleared after writing to debug log for memory efficiency)
+    debug_record: Optional[DebugRecord] = None
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +691,18 @@ class MediaIntegrityCheck(TackleFactory):
                  'check level policy, and return codes for each file'
         )
 
+        # Debug log output
+        subparser.add_argument(
+            '--debug-log',
+            type=str,
+            default=None,
+            metavar='PATH',
+            help='Path to a CSV file for detailed debug output. Contains full information '
+                 'about each file checked: path, size, tool used, command, return code, '
+                 'stdout, stderr, regex patterns used, decision made, and timing. '
+                 'Output uses proper CSV escaping to preserve newlines and special characters.'
+        )
+
     def __init__(self, parser):
         super().__init__(parser)
         options, _ = parser.parse_known_args()
@@ -499,6 +718,7 @@ class MediaIntegrityCheck(TackleFactory):
         self.timeout: int = options.timeout
         self.check_level: CheckLevel = CheckLevel(options.check_level)
         self.verbose: bool = options.verbose
+        self.debug_log_path: Optional[str] = options.debug_log
 
         if self.verbose:
             logger.setLevel(logging.DEBUG)
@@ -545,6 +765,8 @@ class MediaIntegrityCheck(TackleFactory):
         logger.info('Timeout: %d seconds', self.timeout)
         logger.info('Check level: %s', self.check_level.value)
         logger.info('Verbose mode: %s', 'enabled' if self.verbose else 'disabled')
+        if self.debug_log_path:
+            logger.info('Debug log: %s', self.debug_log_path)
         if self.allowed_extensions:
             logger.info('Extensions filter: %s', ', '.join(sorted(self.allowed_extensions)))
         else:
@@ -572,7 +794,15 @@ class MediaIntegrityCheck(TackleFactory):
         return self._run_validation()
 
     def _run_validation(self) -> int:
-        """Main validation workflow."""
+        """Main validation workflow with streaming outputs for memory efficiency.
+        
+        This method:
+        1. Scans the directory for files
+        2. Opens streaming writers for all output files
+        3. Validates each file and writes results immediately (line-by-line)
+        4. Cleans up debug data after writing to conserve memory
+        5. Reports final statistics
+        """
         # 1. Scan directory
         logger.info('Scanning directory: %s', self.directory)
         entries = self._scan_directory()
@@ -582,76 +812,120 @@ class MediaIntegrityCheck(TackleFactory):
             logger.warning('No files to validate')
             return 0
 
-        # 2. Validate files
-        logger.info('Starting validation...')
-        outcomes = self._validate_entries(entries)
-
-        # 3. Categorize results into 5 categories
-        valid_entries: List[FileEntry] = []
-        corrupt_entries: List[FileEntry] = []
-        untestable_entries: List[FileEntry] = []
-        missing_tool_entries: List[FileEntry] = []
-        error_entries: List[FileEntry] = []
-
-        for outcome in outcomes:
-            if outcome.result == ValidationResult.VALID:
-                valid_entries.append(outcome.entry)
-            elif outcome.result == ValidationResult.CORRUPT:
-                corrupt_entries.append(outcome.entry)
-            elif outcome.result == ValidationResult.UNTESTABLE:
-                untestable_entries.append(outcome.entry)
-            elif outcome.result == ValidationResult.TOOL_MISSING:
-                missing_tool_entries.append(outcome.entry)
-            elif outcome.result == ValidationResult.TOOL_ERROR:
-                error_entries.append(outcome.entry)
-
-        # 4. Write output files (only create non-empty listings)
+        # 2. Set up output file paths
         ok_path = f"{self.output_base}_ok.csv"
         broken_path = f"{self.output_base}_broken.csv"
         untestable_path = f"{self.output_base}_untestable.csv"
         missing_tool_path = f"{self.output_base}_missing_tool.csv"
         error_path = f"{self.output_base}_error.csv"
 
-        ok_count = 0
-        broken_count = 0
-        untestable_count = 0
-        missing_tool_count = 0
-        error_count = 0
+        # 3. Create streaming writers (files created on first write)
+        ok_writer = StreamingListingWriter(ok_path)
+        broken_writer = StreamingListingWriter(broken_path)
+        untestable_writer = StreamingListingWriter(untestable_path)
+        missing_tool_writer = StreamingListingWriter(missing_tool_path)
+        error_writer = StreamingListingWriter(error_path)
 
-        if valid_entries:
-            ok_count = write_listing(ok_path, valid_entries)
-        if corrupt_entries:
-            broken_count = write_listing(broken_path, corrupt_entries)
-        if untestable_entries:
-            untestable_count = write_listing(untestable_path, untestable_entries)
-        if missing_tool_entries:
-            missing_tool_count = write_listing(missing_tool_path, missing_tool_entries)
-        if error_entries:
-            error_count = write_listing(error_path, error_entries)
+        # 4. Set up debug log writer if requested
+        debug_writer: Optional[DebugLogWriter] = None
+        if self.debug_log_path:
+            debug_writer = DebugLogWriter(self.debug_log_path)
+            debug_writer.open()
+            logger.info('Debug log: %s', self.debug_log_path)
 
-        # 5. Summary
+        try:
+            # 5. Validate files with streaming output
+            logger.info('Starting validation...')
+            total = len(entries)
+            processed = 0
+            last_progress = time.monotonic()
+            progress_interval = 10  # seconds
+
+            # Category counters
+            counts = {
+                ValidationResult.VALID: 0,
+                ValidationResult.CORRUPT: 0,
+                ValidationResult.UNTESTABLE: 0,
+                ValidationResult.TOOL_MISSING: 0,
+                ValidationResult.TOOL_ERROR: 0,
+            }
+
+            for entry in entries:
+                # Validate file (now includes debug_record if debug_log is enabled)
+                outcome = self._validate_single(entry, create_debug_record=(debug_writer is not None))
+                
+                # Write to appropriate output file immediately
+                if outcome.result == ValidationResult.VALID:
+                    ok_writer.write(outcome.entry)
+                elif outcome.result == ValidationResult.CORRUPT:
+                    broken_writer.write(outcome.entry)
+                elif outcome.result == ValidationResult.UNTESTABLE:
+                    untestable_writer.write(outcome.entry)
+                elif outcome.result == ValidationResult.TOOL_MISSING:
+                    missing_tool_writer.write(outcome.entry)
+                elif outcome.result == ValidationResult.TOOL_ERROR:
+                    error_writer.write(outcome.entry)
+
+                # Write to debug log if enabled
+                if debug_writer and outcome.debug_record:
+                    debug_writer.write(outcome.debug_record)
+                    # Clear debug data to free memory
+                    outcome.debug_record = None
+
+                counts[outcome.result] += 1
+                processed += 1
+
+                # Time-based progress with stats
+                now = time.monotonic()
+                if now - last_progress >= progress_interval:
+                    pct = (processed / total) * 100
+                    logger.info(
+                        'Progress: %d/%d (%.1f%%) | OK: %d | Broken: %d | Untestable: %d | Missing tool: %d | Errors: %d',
+                        processed, total, pct,
+                        counts[ValidationResult.VALID],
+                        counts[ValidationResult.CORRUPT],
+                        counts[ValidationResult.UNTESTABLE],
+                        counts[ValidationResult.TOOL_MISSING],
+                        counts[ValidationResult.TOOL_ERROR],
+                    )
+                    last_progress = now
+
+        finally:
+            # 6. Close all writers
+            ok_writer.close()
+            broken_writer.close()
+            untestable_writer.close()
+            missing_tool_writer.close()
+            error_writer.close()
+            if debug_writer:
+                debug_writer.close()
+
+        # 7. Summary
         logger.info('=' * 60)
         logger.info('Validation complete:')
-        logger.info('  Valid:        %d', len(valid_entries))
-        logger.info('  Corrupt:      %d', len(corrupt_entries))
-        logger.info('  Untestable:   %d', len(untestable_entries))
-        logger.info('  Missing tool: %d', len(missing_tool_entries))
-        logger.info('  Errors:       %d', len(error_entries))
+        logger.info('  Valid:        %d', counts[ValidationResult.VALID])
+        logger.info('  Corrupt:      %d', counts[ValidationResult.CORRUPT])
+        logger.info('  Untestable:   %d', counts[ValidationResult.UNTESTABLE])
+        logger.info('  Missing tool: %d', counts[ValidationResult.TOOL_MISSING])
+        logger.info('  Errors:       %d', counts[ValidationResult.TOOL_ERROR])
         logger.info('=' * 60)
-        # Output file paths
-        if ok_count:
-            logger.info('  Output: %s', ok_path)
-        if broken_count:
-            logger.info('  Output: %s', broken_path)
-        if untestable_count:
-            logger.info('  Output: %s', untestable_path)
-        if missing_tool_count:
-            logger.info('  Output: %s', missing_tool_path)
-        if error_count:
-            logger.info('  Output: %s', error_path)
+        
+        # Output file paths (only show files that were actually created)
+        if ok_writer.count:
+            logger.info('  Output: %s (%d entries)', ok_path, ok_writer.count)
+        if broken_writer.count:
+            logger.info('  Output: %s (%d entries)', broken_path, broken_writer.count)
+        if untestable_writer.count:
+            logger.info('  Output: %s (%d entries)', untestable_path, untestable_writer.count)
+        if missing_tool_writer.count:
+            logger.info('  Output: %s (%d entries)', missing_tool_path, missing_tool_writer.count)
+        if error_writer.count:
+            logger.info('  Output: %s (%d entries)', error_path, error_writer.count)
+        if self.debug_log_path:
+            logger.info('  Debug log: %s', self.debug_log_path)
 
         # Return 1 if any corrupt files found, 0 otherwise
-        return 1 if broken_count > 0 else 0
+        return 1 if broken_writer.count > 0 else 0
 
     def _scan_directory(self) -> List[FileEntry]:
         """Recursively scan directory and collect FileEntry objects.
@@ -694,49 +968,6 @@ class MediaIntegrityCheck(TackleFactory):
 
         return entries
 
-    def _validate_entries(self, entries: List[FileEntry]) -> List[ValidationOutcome]:
-        """Validate all entries and return outcomes.
-        
-        Shows progress every 10 seconds with category statistics.
-        """
-        outcomes: List[ValidationOutcome] = []
-        total = len(entries)
-        processed = 0
-        last_progress = time.monotonic()
-        progress_interval = 10  # seconds
-
-        # Category counters
-        counts = {
-            ValidationResult.VALID: 0,
-            ValidationResult.CORRUPT: 0,
-            ValidationResult.UNTESTABLE: 0,
-            ValidationResult.TOOL_MISSING: 0,
-            ValidationResult.TOOL_ERROR: 0,
-        }
-
-        for entry in entries:
-            outcome = self._validate_single(entry)
-            outcomes.append(outcome)
-            counts[outcome.result] += 1
-            processed += 1
-
-            # Time-based progress with stats
-            now = time.monotonic()
-            if now - last_progress >= progress_interval:
-                pct = (processed / total) * 100
-                logger.info(
-                    'Progress: %d/%d (%.1f%%) | OK: %d | Broken: %d | Untestable: %d | Missing tool: %d | Errors: %d',
-                    processed, total, pct,
-                    counts[ValidationResult.VALID],
-                    counts[ValidationResult.CORRUPT],
-                    counts[ValidationResult.UNTESTABLE],
-                    counts[ValidationResult.TOOL_MISSING],
-                    counts[ValidationResult.TOOL_ERROR],
-                )
-                last_progress = now
-
-        return outcomes
-
     def _format_size(self, size: int) -> str:
         """Format file size in human-readable form."""
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -745,18 +976,35 @@ class MediaIntegrityCheck(TackleFactory):
             size /= 1024
         return f"{size:.1f}PB"
 
-    def _validate_single(self, entry: FileEntry) -> ValidationOutcome:
+    def _validate_single(self, entry: FileEntry, create_debug_record: bool = False) -> ValidationOutcome:
         """Validate a single file entry.
+        
+        Args:
+            entry: The FileEntry to validate.
+            create_debug_record: If True, populate debug_record in the outcome
+                for debug log output.
         
         Returns:
             ValidationOutcome with result, tool info, and any error details.
+            If create_debug_record is True, includes populated debug_record.
         
         Validation behavior depends on check_level:
         - BASIC: Exit code only (fastest)
         - DEFAULT: Exit code + stderr pattern matching (recommended)
         - PEDANTIC: Full decode/verification using alternative binary if configured
         """
+        start_time = time.monotonic()
         ext = get_extension(entry.path)
+
+        # Initialize debug record if requested
+        debug_record: Optional[DebugRecord] = None
+        if create_debug_record:
+            debug_record = DebugRecord(
+                file_path=entry.path,
+                file_size=entry.size,
+                file_extension=ext,
+                check_level=self.check_level.value,
+            )
 
         # 1. Log file info
         if self.verbose:
@@ -773,10 +1021,17 @@ class MediaIntegrityCheck(TackleFactory):
         if config is None:
             if self.verbose:
                 logger.debug('  Decision: UNTESTABLE - no validator for extension')
+            
+            if debug_record:
+                debug_record.result = 'UNTESTABLE'
+                debug_record.decision_reason = 'No validator defined for this file extension'
+                debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+            
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.UNTESTABLE,
                 error_message='No validator defined for this file extension',
+                debug_record=debug_record,
             )
 
         # 2. Log tool info
@@ -800,15 +1055,30 @@ class MediaIntegrityCheck(TackleFactory):
             args_before = list(config.args)
             is_ffmpeg_pedantic = False
 
+        # Update debug record with tool info
+        if debug_record:
+            debug_record.tool_binary = binary
+            debug_record.tool_package = config.apt_package
+            debug_record.stderr_regex = config.check_stderr
+            debug_record.stdout_regex = config.check_stdout
+
         # Check if tool is available
         if not check_tool_available(binary):
             if self.verbose:
                 logger.debug('  Decision: TOOL_MISSING - %s not installed', binary)
+            
+            if debug_record:
+                debug_record.result = 'TOOL_MISSING'
+                debug_record.decision_reason = f'Tool not installed: {binary}'
+                debug_record.error_message = f'apt-get install {config.apt_package}'
+                debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+            
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_MISSING,
                 tool=binary,
                 error_message=f'Tool not installed: {binary} (apt-get install {config.apt_package})',
+                debug_record=debug_record,
             )
 
         # Build command
@@ -818,8 +1088,12 @@ class MediaIntegrityCheck(TackleFactory):
         else:
             cmd = [binary] + args_before + [entry.path] + list(config.args_after_file)
 
+        cmd_str = ' '.join(cmd)
+        if debug_record:
+            debug_record.command = cmd_str
+
         if self.verbose:
-            logger.debug('  Command: %s', ' '.join(cmd))
+            logger.debug('  Command: %s', cmd_str)
 
         try:
             result = subprocess.run(
@@ -831,34 +1105,64 @@ class MediaIntegrityCheck(TackleFactory):
         except subprocess.TimeoutExpired:
             if self.verbose:
                 logger.debug('  Decision: TOOL_ERROR - timeout after %ds', self.timeout)
+            
+            if debug_record:
+                debug_record.result = 'TOOL_ERROR'
+                debug_record.decision_reason = f'Timeout after {self.timeout}s'
+                debug_record.error_message = f'Validation timed out after {self.timeout}s'
+                debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+            
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_ERROR,
                 tool=binary,
                 error_message=f'Validation timed out after {self.timeout}s',
+                debug_record=debug_record,
             )
         except OSError as exc:
             if self.verbose:
                 logger.debug('  Decision: TOOL_ERROR - %s', exc)
+            
+            if debug_record:
+                debug_record.result = 'TOOL_ERROR'
+                debug_record.decision_reason = 'OSError during tool execution'
+                debug_record.error_message = str(exc)
+                debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+            
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_ERROR,
                 tool=binary,
                 error_message=str(exc),
+                debug_record=debug_record,
             )
         except Exception as exc:
             if self.verbose:
                 logger.debug('  Decision: TOOL_ERROR - unexpected: %s', exc)
+            
+            if debug_record:
+                debug_record.result = 'TOOL_ERROR'
+                debug_record.decision_reason = 'Unexpected exception during tool execution'
+                debug_record.error_message = f'Unexpected error: {exc}'
+                debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+            
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.TOOL_ERROR,
                 tool=binary,
                 error_message=f'Unexpected error: {exc}',
+                debug_record=debug_record,
             )
 
         exit_code = result.returncode
         stderr = result.stderr[:1500] if result.stderr else None
         stdout = result.stdout[:1500] if result.stdout else None
+
+        # Update debug record with execution results
+        if debug_record:
+            debug_record.exit_code = exit_code
+            debug_record.stdout = result.stdout or ''
+            debug_record.stderr = result.stderr or ''
 
         # 3. Log stdout/stderr
         if self.verbose:
@@ -875,6 +1179,7 @@ class MediaIntegrityCheck(TackleFactory):
         is_valid = exit_code in config.success_codes
 
         # Check stderr patterns (for DEFAULT and PEDANTIC levels)
+        stderr_matched = False
         if self.check_level != CheckLevel.BASIC and config.check_stderr:
             if result.stderr and not re.search(config.check_stderr, result.stderr):
                 logger.debug(
@@ -888,22 +1193,36 @@ class MediaIntegrityCheck(TackleFactory):
                         result.stderr, config.check_stderr
                     )
             if result.stderr and re.search(config.check_stderr, result.stderr):
+                stderr_matched = True
+                if debug_record:
+                    debug_record.stderr_matched = True
                 if self.verbose:
                     logger.debug(
                         '  Decision: CORRUPT - stderr matched pattern %r',
                         config.check_stderr
                     )
+                
+                if debug_record:
+                    debug_record.result = 'CORRUPT'
+                    debug_record.decision_reason = f'stderr matched pattern: {config.check_stderr}'
+                    debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+                
                 return ValidationOutcome(
                     entry=entry,
                     result=ValidationResult.CORRUPT,
                     tool=binary,
                     exit_code=exit_code,
                     stderr_snippet=stderr,
+                    debug_record=debug_record,
                 )
             elif self.verbose:
                 logger.debug('  Stderr pattern check: no match (OK)')
+            
+            if debug_record and not stderr_matched:
+                debug_record.stderr_matched = False
 
         # Check stdout patterns (for DEFAULT and PEDANTIC levels)
+        stdout_matched = False
         if self.check_level != CheckLevel.BASIC and config.check_stdout:
             if result.stdout and not re.search(config.check_stdout, result.stdout):
                 logger.debug(
@@ -917,20 +1236,34 @@ class MediaIntegrityCheck(TackleFactory):
                         result.stdout, config.check_stdout
                     )
             if result.stdout and re.search(config.check_stdout, result.stdout):
+                stdout_matched = True
+                if debug_record:
+                    debug_record.stdout_matched = True
                 if self.verbose:
                     logger.debug(
                         '  Decision: CORRUPT - stdout matched pattern %r',
                         config.check_stdout
                     )
+                
+                if debug_record:
+                    debug_record.result = 'CORRUPT'
+                    debug_record.decision_reason = f'stdout matched pattern: {config.check_stdout}'
+                    debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+                
                 return ValidationOutcome(
                     entry=entry,
                     result=ValidationResult.CORRUPT,
                     tool=binary,
                     exit_code=exit_code,
-                    stderr_snippet=stdout,
+                    stdout_snippet=stdout,
+                    stderr_snippet=stderr,
+                    debug_record=debug_record,
                 )
             elif self.verbose:
                 logger.debug('  Stdout pattern check: no match (OK)')
+            
+            if debug_record and not stdout_matched:
+                debug_record.stdout_matched = False
 
         # 4. Check basic decision
         if not is_valid:
@@ -939,16 +1272,28 @@ class MediaIntegrityCheck(TackleFactory):
                     '  Decision: CORRUPT - exit code %d not in success codes %s',
                     result.returncode, config.success_codes
                 )
+            
+            if debug_record:
+                debug_record.result = 'CORRUPT'
+                debug_record.decision_reason = f'exit code {exit_code} not in success codes {config.success_codes}'
+                debug_record.duration_ms = (time.monotonic() - start_time) * 1000
+            
             return ValidationOutcome(
                 entry=entry,
                 result=ValidationResult.CORRUPT,
                 tool=binary,
                 exit_code=exit_code,
                 stderr_snippet=stderr,
+                debug_record=debug_record,
             )
 
         if self.verbose:
             logger.debug('  Decision: VALID')
+
+        if debug_record:
+            debug_record.result = 'VALID'
+            debug_record.decision_reason = f'exit code {exit_code} in success codes, no error patterns matched'
+            debug_record.duration_ms = (time.monotonic() - start_time) * 1000
 
         return ValidationOutcome(
             entry=entry,
@@ -956,6 +1301,7 @@ class MediaIntegrityCheck(TackleFactory):
             tool=binary,
             exit_code=exit_code,
             stderr_snippet=stderr,
+            debug_record=debug_record,
         )
 
     def list_available_tools(self) -> str:

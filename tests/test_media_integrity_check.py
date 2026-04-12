@@ -1572,3 +1572,488 @@ class TestNewVideoExtensionsPedantic:
         assert config.pedantic_binary == 'ffmpeg'
         assert config.pedantic_args is not None
         assert '-hwaccel' in config.pedantic_args
+
+
+# ===========================================================================
+# 19. DebugRecord Tests
+# ===========================================================================
+
+
+class TestDebugRecord:
+    """Tests for DebugRecord dataclass."""
+
+    def test_create_debug_record(self):
+        """Create a basic DebugRecord."""
+        from tackles.MediaIntegrityCheck import DebugRecord
+
+        record = DebugRecord(
+            file_path='/path/to/file.mp4',
+            file_size=1024,
+            file_extension='.mp4',
+        )
+
+        assert record.file_path == '/path/to/file.mp4'
+        assert record.file_size == 1024
+        assert record.file_extension == '.mp4'
+        assert record.tool_binary is None
+        assert record.result == ''
+
+    def test_debug_record_all_fields(self):
+        """Create DebugRecord with all fields populated."""
+        from tackles.MediaIntegrityCheck import DebugRecord
+
+        record = DebugRecord(
+            file_path='/path/to/file.mp4',
+            file_size=1024,
+            file_extension='.mp4',
+            tool_binary='ffprobe',
+            tool_package='ffmpeg',
+            command='ffprobe -v error -i /path/to/file.mp4',
+            check_level='default',
+            exit_code=0,
+            stdout='Stream info',
+            stderr='',
+            stderr_regex=r'(?i)error',
+            stdout_regex=None,
+            stderr_matched=False,
+            stdout_matched=None,
+            result='VALID',
+            decision_reason='exit code 0 in success codes',
+            error_message=None,
+            duration_ms=150.5,
+        )
+
+        assert record.tool_binary == 'ffprobe'
+        assert record.exit_code == 0
+        assert record.stderr_matched is False
+        assert record.result == 'VALID'
+        assert record.duration_ms == 150.5
+
+
+class TestDebugLogColumns:
+    """Tests for DEBUG_LOG_COLUMNS constant."""
+
+    def test_columns_exist(self):
+        """DEBUG_LOG_COLUMNS should be defined."""
+        from tackles.MediaIntegrityCheck import DEBUG_LOG_COLUMNS
+
+        assert isinstance(DEBUG_LOG_COLUMNS, tuple)
+        assert len(DEBUG_LOG_COLUMNS) > 0
+
+    def test_columns_include_required_fields(self):
+        """DEBUG_LOG_COLUMNS should include all required fields."""
+        from tackles.MediaIntegrityCheck import DEBUG_LOG_COLUMNS
+
+        required = [
+            'file_path', 'file_size', 'file_extension',
+            'tool_binary', 'command', 'exit_code',
+            'stdout', 'stderr', 'result', 'decision_reason',
+        ]
+        for field in required:
+            assert field in DEBUG_LOG_COLUMNS, f'{field} not in columns'
+
+
+# ===========================================================================
+# 20. DebugLogWriter Tests
+# ===========================================================================
+
+
+class TestDebugLogWriter:
+    """Tests for DebugLogWriter class."""
+
+    def test_create_writer(self, tmp_path):
+        """Create DebugLogWriter instance."""
+        from tackles.MediaIntegrityCheck import DebugLogWriter
+
+        log_path = tmp_path / 'debug.csv'
+        writer = DebugLogWriter(str(log_path))
+
+        assert writer.path == str(log_path)
+
+    def test_write_header_on_open(self, tmp_path):
+        """Opening writer should write CSV header."""
+        from tackles.MediaIntegrityCheck import DebugLogWriter, DEBUG_LOG_COLUMNS
+
+        log_path = tmp_path / 'debug.csv'
+        writer = DebugLogWriter(str(log_path))
+        writer.open()
+        writer.close()
+
+        # Read the file and check header
+        with open(log_path, 'r') as f:
+            import csv
+            reader = csv.reader(f)
+            header = next(reader)
+
+        assert header == list(DEBUG_LOG_COLUMNS)
+
+    def test_write_record(self, tmp_path):
+        """Write a DebugRecord to CSV."""
+        from tackles.MediaIntegrityCheck import DebugLogWriter, DebugRecord
+
+        log_path = tmp_path / 'debug.csv'
+        record = DebugRecord(
+            file_path='/path/to/file.mp4',
+            file_size=1024,
+            file_extension='.mp4',
+            result='VALID',
+        )
+
+        with DebugLogWriter(str(log_path)) as writer:
+            writer.write(record)
+
+        # Verify file exists and has 2 lines (header + data)
+        with open(log_path, 'r') as f:
+            lines = f.readlines()
+        assert len(lines) == 2
+
+    def test_write_multiple_records(self, tmp_path):
+        """Write multiple DebugRecords to CSV."""
+        from tackles.MediaIntegrityCheck import DebugLogWriter, DebugRecord
+
+        log_path = tmp_path / 'debug.csv'
+
+        with DebugLogWriter(str(log_path)) as writer:
+            for i in range(5):
+                record = DebugRecord(
+                    file_path=f'/path/to/file{i}.mp4',
+                    file_size=1024 * i,
+                    file_extension='.mp4',
+                    result='VALID',
+                )
+                writer.write(record)
+
+        # Verify file has 6 lines (header + 5 records)
+        with open(log_path, 'r') as f:
+            lines = f.readlines()
+        assert len(lines) == 6
+
+    def test_preserves_newlines_in_stderr(self, tmp_path):
+        """CSV should preserve newlines in stderr field."""
+        from tackles.MediaIntegrityCheck import DebugLogWriter, DebugRecord
+        import csv
+
+        log_path = tmp_path / 'debug.csv'
+        record = DebugRecord(
+            file_path='/path/to/file.mp4',
+            file_size=1024,
+            file_extension='.mp4',
+            stderr='Error line 1\nError line 2\nError line 3',
+            result='CORRUPT',
+        )
+
+        with DebugLogWriter(str(log_path)) as writer:
+            writer.write(record)
+
+        # Read back and verify newlines are preserved
+        with open(log_path, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            row = next(reader)
+
+        assert '\n' in row['stderr']
+        assert 'Error line 1' in row['stderr']
+        assert 'Error line 3' in row['stderr']
+
+    def test_context_manager(self, tmp_path):
+        """DebugLogWriter should work as context manager."""
+        from tackles.MediaIntegrityCheck import DebugLogWriter, DebugRecord
+
+        log_path = tmp_path / 'debug.csv'
+
+        with DebugLogWriter(str(log_path)) as writer:
+            record = DebugRecord(
+                file_path='/path/to/file.mp4',
+                result='VALID',
+            )
+            writer.write(record)
+
+        assert log_path.exists()
+
+
+# ===========================================================================
+# 21. StreamingListingWriter Tests
+# ===========================================================================
+
+
+class TestStreamingListingWriter:
+    """Tests for StreamingListingWriter class."""
+
+    def test_create_writer(self, tmp_path):
+        """Create StreamingListingWriter instance."""
+        from tackles.MediaIntegrityCheck import StreamingListingWriter
+
+        output_path = tmp_path / 'output.csv'
+        writer = StreamingListingWriter(str(output_path))
+
+        assert writer.path == str(output_path)
+        assert writer.count == 0
+
+    def test_lazy_file_creation(self, tmp_path):
+        """File should not be created until first write."""
+        from tackles.MediaIntegrityCheck import StreamingListingWriter
+
+        output_path = tmp_path / 'output.csv'
+        writer = StreamingListingWriter(str(output_path))
+
+        # File should not exist yet
+        assert not output_path.exists()
+
+        writer.close()
+        # Still should not exist (no writes)
+        assert not output_path.exists()
+
+    def test_write_creates_file(self, tmp_path):
+        """First write should create the file."""
+        from tackles.MediaIntegrityCheck import StreamingListingWriter
+        from common.FileEntry import FileEntry
+
+        output_path = tmp_path / 'output.csv'
+        test_file = tmp_path / 'test.mp4'
+        test_file.write_bytes(b'content')
+
+        entry = FileEntry.from_fs_path(str(test_file))
+
+        writer = StreamingListingWriter(str(output_path))
+        writer.write(entry)
+        writer.close()
+
+        assert output_path.exists()
+        assert writer.count == 1
+
+    def test_write_multiple_entries(self, tmp_path):
+        """Write multiple entries and count them."""
+        from tackles.MediaIntegrityCheck import StreamingListingWriter
+        from common.FileEntry import FileEntry
+
+        output_path = tmp_path / 'output.csv'
+
+        # Create test files
+        entries = []
+        for i in range(3):
+            test_file = tmp_path / f'test{i}.mp4'
+            test_file.write_bytes(b'content')
+            entries.append(FileEntry.from_fs_path(str(test_file)))
+
+        writer = StreamingListingWriter(str(output_path))
+        for entry in entries:
+            writer.write(entry)
+        writer.close()
+
+        assert writer.count == 3
+
+        # Verify file contents
+        with open(output_path, 'r') as f:
+            lines = f.readlines()
+        assert len(lines) == 3
+
+    def test_context_manager(self, tmp_path):
+        """StreamingListingWriter should work as context manager."""
+        from tackles.MediaIntegrityCheck import StreamingListingWriter
+        from common.FileEntry import FileEntry
+
+        output_path = tmp_path / 'output.csv'
+        test_file = tmp_path / 'test.mp4'
+        test_file.write_bytes(b'content')
+
+        with StreamingListingWriter(str(output_path)) as writer:
+            entry = FileEntry.from_fs_path(str(test_file))
+            writer.write(entry)
+
+        assert output_path.exists()
+
+
+# ===========================================================================
+# 22. ValidationOutcome with DebugRecord Tests
+# ===========================================================================
+
+
+class TestValidationOutcomeWithDebug:
+    """Tests for ValidationOutcome with debug_record field."""
+
+    def test_outcome_has_debug_record_field(self, tmp_path):
+        """ValidationOutcome should have debug_record field."""
+        from common.FileEntry import FileEntry
+
+        test_file = tmp_path / 'test.mp4'
+        test_file.write_bytes(b'content')
+        entry = FileEntry.from_fs_path(str(test_file))
+
+        outcome = ValidationOutcome(
+            entry=entry,
+            result=ValidationResult.VALID,
+            debug_record=None,
+        )
+
+        assert hasattr(outcome, 'debug_record')
+        assert outcome.debug_record is None
+
+    def test_outcome_with_populated_debug_record(self, tmp_path):
+        """ValidationOutcome can have populated debug_record."""
+        from common.FileEntry import FileEntry
+        from tackles.MediaIntegrityCheck import DebugRecord
+
+        test_file = tmp_path / 'test.mp4'
+        test_file.write_bytes(b'content')
+        entry = FileEntry.from_fs_path(str(test_file))
+
+        debug = DebugRecord(
+            file_path=str(test_file),
+            file_size=7,
+            file_extension='.mp4',
+            result='VALID',
+        )
+
+        outcome = ValidationOutcome(
+            entry=entry,
+            result=ValidationResult.VALID,
+            debug_record=debug,
+        )
+
+        assert outcome.debug_record is not None
+        assert outcome.debug_record.file_path == str(test_file)
+        assert outcome.debug_record.result == 'VALID'
+
+
+# ===========================================================================
+# 23. _validate_single with create_debug_record Tests
+# ===========================================================================
+
+
+class TestValidateSingleWithDebug:
+    """Tests for _validate_single() with create_debug_record parameter."""
+
+    @pytest.fixture
+    def mock_media_check_with_debug(self):
+        """Create a mock MediaIntegrityCheck instance."""
+        from tackles.MediaIntegrityCheck import MediaIntegrityCheck
+
+        mock = MagicMock(spec=MediaIntegrityCheck)
+        mock.timeout = 300
+        mock.check_level = CheckLevel.DEFAULT
+        mock.verbose = False
+        mock._validate_single = MediaIntegrityCheck._validate_single
+        mock._format_size = MediaIntegrityCheck._format_size
+        return mock
+
+    @patch('subprocess.run')
+    @patch('tackles.MediaIntegrityCheck.check_tool_available')
+    def test_no_debug_record_by_default(self, mock_available, mock_run, mock_media_check_with_debug, tmp_path):
+        """Without create_debug_record=True, debug_record should be None."""
+        from common.FileEntry import FileEntry
+
+        test_file = tmp_path / 'test.mp4'
+        test_file.write_bytes(b'fake mp4')
+        entry = FileEntry.from_fs_path(str(test_file))
+
+        mock_available.return_value = True
+        mock_run.return_value = MagicMock(returncode=0, stderr='', stdout='')
+
+        outcome = mock_media_check_with_debug._validate_single(
+            mock_media_check_with_debug, entry, create_debug_record=False
+        )
+
+        assert outcome.debug_record is None
+
+    @patch('subprocess.run')
+    @patch('tackles.MediaIntegrityCheck.check_tool_available')
+    def test_debug_record_created_when_requested(self, mock_available, mock_run, mock_media_check_with_debug, tmp_path):
+        """With create_debug_record=True, debug_record should be populated."""
+        from common.FileEntry import FileEntry
+
+        test_file = tmp_path / 'test.mp4'
+        test_file.write_bytes(b'fake mp4')
+        entry = FileEntry.from_fs_path(str(test_file))
+
+        mock_available.return_value = True
+        mock_run.return_value = MagicMock(returncode=0, stderr='', stdout='')
+
+        outcome = mock_media_check_with_debug._validate_single(
+            mock_media_check_with_debug, entry, create_debug_record=True
+        )
+
+        assert outcome.debug_record is not None
+        assert outcome.debug_record.file_path == str(test_file)
+        assert outcome.debug_record.result == 'VALID'
+        assert outcome.debug_record.tool_binary == 'ffprobe'
+
+    @patch('subprocess.run')
+    @patch('tackles.MediaIntegrityCheck.check_tool_available')
+    def test_debug_record_has_timing(self, mock_available, mock_run, mock_media_check_with_debug, tmp_path):
+        """Debug record should have duration_ms populated."""
+        from common.FileEntry import FileEntry
+
+        test_file = tmp_path / 'test.mp4'
+        test_file.write_bytes(b'fake mp4')
+        entry = FileEntry.from_fs_path(str(test_file))
+
+        mock_available.return_value = True
+        mock_run.return_value = MagicMock(returncode=0, stderr='', stdout='')
+
+        outcome = mock_media_check_with_debug._validate_single(
+            mock_media_check_with_debug, entry, create_debug_record=True
+        )
+
+        assert outcome.debug_record.duration_ms is not None
+        assert outcome.debug_record.duration_ms >= 0
+
+    @patch('subprocess.run')
+    @patch('tackles.MediaIntegrityCheck.check_tool_available')
+    def test_debug_record_captures_stderr(self, mock_available, mock_run, mock_media_check_with_debug, tmp_path):
+        """Debug record should capture stderr output."""
+        from common.FileEntry import FileEntry
+
+        test_file = tmp_path / 'test.mp4'
+        test_file.write_bytes(b'fake mp4')
+        entry = FileEntry.from_fs_path(str(test_file))
+
+        mock_available.return_value = True
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stderr='Error: invalid data found',
+            stdout=''
+        )
+
+        outcome = mock_media_check_with_debug._validate_single(
+            mock_media_check_with_debug, entry, create_debug_record=True
+        )
+
+        assert outcome.debug_record is not None
+        assert 'Error: invalid data found' in outcome.debug_record.stderr
+        assert outcome.debug_record.result == 'CORRUPT'
+
+    def test_debug_record_for_untestable(self, mock_media_check_with_debug, tmp_path):
+        """Debug record should be populated for untestable files."""
+        from common.FileEntry import FileEntry
+
+        test_file = tmp_path / 'test.xyz'
+        test_file.write_bytes(b'content')
+        entry = FileEntry.from_fs_path(str(test_file))
+
+        outcome = mock_media_check_with_debug._validate_single(
+            mock_media_check_with_debug, entry, create_debug_record=True
+        )
+
+        assert outcome.result == ValidationResult.UNTESTABLE
+        assert outcome.debug_record is not None
+        assert outcome.debug_record.result == 'UNTESTABLE'
+        assert 'No validator' in outcome.debug_record.decision_reason
+
+    @patch('tackles.MediaIntegrityCheck.check_tool_available')
+    def test_debug_record_for_missing_tool(self, mock_available, mock_media_check_with_debug, tmp_path):
+        """Debug record should be populated for missing tool."""
+        from common.FileEntry import FileEntry
+
+        test_file = tmp_path / 'test.mp4'
+        test_file.write_bytes(b'content')
+        entry = FileEntry.from_fs_path(str(test_file))
+
+        mock_available.return_value = False
+
+        outcome = mock_media_check_with_debug._validate_single(
+            mock_media_check_with_debug, entry, create_debug_record=True
+        )
+
+        assert outcome.result == ValidationResult.TOOL_MISSING
+        assert outcome.debug_record is not None
+        assert outcome.debug_record.result == 'TOOL_MISSING'
+        assert outcome.debug_record.tool_binary == 'ffprobe'
