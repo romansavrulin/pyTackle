@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
 from common.FileEntry import FileEntry
-from common.listing import write_listing
+from common.streaming_csv import StreamingListingWriter
 from tackles.TackleFactory import TackleFactory
 
 logging.basicConfig(
@@ -462,6 +462,7 @@ class FclonesDuplicates(TackleFactory):
 
     def do(self) -> int:
         """Execute the tackle: parse report and generate listing."""
+        import csv
         import os
 
         # Validate input file exists
@@ -471,28 +472,31 @@ class FclonesDuplicates(TackleFactory):
 
         try:
             # Parse report and generate entries
-            entries = list(generate_entries_from_report(
+            entries = generate_entries_from_report(
                 self.report_file,
                 strip_prefix=self.strip_prefix,
                 include=self.include,
                 add_group_id=self.group_id,
-            ))
-
-            logger.info('Generated %d file entries', len(entries))
+            )
 
             # Write output
             if self.output_path:
-                count = write_listing(self.output_path, entries)
+                with StreamingListingWriter(
+                    self.output_path,
+                ) as writer:
+                    for entry in entries:
+                        writer.write(entry)
+                count = writer.count
                 logger.info('Wrote %d entries to %s', count, self.output_path)
             else:
                 # Write to stdout
-                import csv
-                import sys
-                writer = csv.writer(sys.stdout)
+                stdout_writer = csv.writer(sys.stdout)
+                count = 0
                 for entry in entries:
-                    writer.writerow(entry.to_listing_row())
+                    stdout_writer.writerow(entry.to_listing_row())
+                    count += 1
                 if not self.quiet:
-                    logger.info('Wrote %d entries to stdout', len(entries))
+                    logger.info('Wrote %d entries to stdout', count)
 
             return 0
 

@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import csv
 from abc import ABC, abstractmethod
-from typing import Generic, List, Optional, Tuple, TypeVar, TextIO
+from typing import Dict, Generic, List, Optional, Tuple, TypeVar, TextIO
+
+from common.FileEntry import FileEntry
+from common.attr_map import CANONICAL_MAP
 
 # Generic type for items written to the CSV
 T = TypeVar('T')
@@ -152,3 +155,64 @@ class StreamingCsvWriter(ABC, Generic[T]):
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Context manager exit. Closes the file."""
         self.close()
+
+
+class StreamingListingWriter(StreamingCsvWriter[FileEntry]):
+    """Streaming CSV writer for FileEntry listings.
+    
+    Writes entries line-by-line to avoid memory accumulation.
+    Uses lazy open mode — file is created only on first write.
+    """
+    
+    def __init__(
+        self,
+        path: str,
+        attr_map: Optional[Dict[str, str]] = None,
+        include_header: bool = True,
+        flush_on_write: bool = True,
+        lazy_open: bool = False
+    ):
+        """Initialize the streaming listing writer.
+        
+        Args:
+            path: Path to the output CSV file.
+            attr_map: Column mapping for FileEntry serialization.
+            include_header: If True, write a header row with attribute names
+                when the file is opened. Defaults to True.
+        """
+        self.attr_map = attr_map or CANONICAL_MAP
+        
+        # Generate header from attr_map keys in column order
+        header: Optional[Tuple[str, ...]] = None
+        if include_header:
+            header = self._generate_header(self.attr_map)
+        
+        super().__init__(
+            path,
+            header=header,
+            lazy_open=True,
+            flush_on_write=True,
+        )
+    
+    @staticmethod
+    def _generate_header(attr_map: Dict[str, str]) -> Tuple[str, ...]:
+        """Generate a header tuple from attr_map keys in column order.
+        
+        Args:
+            attr_map: Column mapping (attribute name → column index).
+        
+        Returns:
+            Tuple of attribute names in column order.
+        """
+        # Find max column index to determine row width
+        max_col = max(int(idx) for idx in attr_map.values())
+        header_list = [''] * (max_col + 1)
+        
+        for attr, col_idx in attr_map.items():
+            header_list[int(col_idx)] = attr
+        
+        return tuple(header_list)
+    
+    def _to_row(self, entry: FileEntry) -> List[str]:
+        """Convert a FileEntry to a list of CSV column values."""
+        return entry.to_listing_row(self.attr_map)

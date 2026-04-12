@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Set, Tuple, TextIO
 from common.FileEntry import FileEntry
 from common.listing import write_listing
 from common.attr_map import CANONICAL_MAP
+from common.streaming_csv import StreamingCsvWriter, StreamingListingWriter
 from tackles.TackleFactory import TackleFactory
 
 logging.basicConfig(
@@ -515,37 +516,6 @@ class DebugLogWriter(StreamingCsvWriter[DebugRecord]):
             record.error_message or '',
             str(record.duration_ms) if record.duration_ms is not None else '',
         ]
-
-
-# ---------------------------------------------------------------------------
-# StreamingListingWriter — memory-efficient CSV writer for result listings
-# ---------------------------------------------------------------------------
-
-class StreamingListingWriter(StreamingCsvWriter[FileEntry]):
-    """Streaming CSV writer for FileEntry listings.
-    
-    Writes entries line-by-line to avoid memory accumulation.
-    Uses lazy open mode — file is created only on first write.
-    """
-    
-    def __init__(self, path: str, attr_map: Optional[Dict[str, str]] = None):
-        """Initialize the streaming listing writer.
-        
-        Args:
-            path: Path to the output CSV file.
-            attr_map: Column mapping for FileEntry serialization.
-        """
-        super().__init__(
-            path,
-            header=None,  # No header for listing files
-            lazy_open=True,
-            flush_on_write=False,
-        )
-        self.attr_map = attr_map or CANONICAL_MAP
-    
-    def _to_row(self, entry: FileEntry) -> List[str]:
-        """Convert a FileEntry to a list of CSV column values."""
-        return entry.to_listing_row(self.attr_map)
 
 
 # ---------------------------------------------------------------------------

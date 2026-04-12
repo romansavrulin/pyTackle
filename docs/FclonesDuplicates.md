@@ -231,7 +231,7 @@ fclones uses **MetroHash** by default — a non-cryptographic hash optimized for
 
 ### Canonical 10-Column CSV
 
-Output follows ValidateCopy's canonical listing format (no header row):
+Output follows ValidateCopy's canonical listing format. By default, a header row is included:
 
 | Column | Index | Content for fclones data |
 |--------|-------|--------------------------|

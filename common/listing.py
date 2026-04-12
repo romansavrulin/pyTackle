@@ -14,7 +14,7 @@ import csv
 import logging
 from typing import Iterator
 
-from common.attr_map import CANONICAL_MAP
+from common.attr_map import CANONICAL_MAP, CANONICAL_HEADER
 from common.FileEntry import FileEntry
 
 logger = logging.getLogger(__name__)
@@ -24,11 +24,48 @@ logger = logging.getLogger(__name__)
 # CSV listing — reading
 # ---------------------------------------------------------------------------
 
+def _is_header_row(cols: list[str], attr_map: dict[str, str]) -> bool:
+    """Check if a row looks like a header row.
+    
+    A row is considered a header if all column values match expected
+    attribute names from the attr_map keys.
+    
+    Parameters
+    ----------
+    cols:
+        The CSV row values.
+    attr_map:
+        Column mapping to check against.
+    
+    Returns
+    -------
+    bool
+        True if the row appears to be a header row.
+    """
+    # Build expected header from attr_map (sorted by column index)
+    sorted_attrs = sorted(attr_map.items(), key=lambda x: int(x[1]))
+    expected_header = tuple(attr for attr, _ in sorted_attrs)
+    
+    # Check if the row values match the expected header names
+    if len(cols) < len(expected_header):
+        return False
+    
+    for i, attr in enumerate(expected_header):
+        col_idx = int(attr_map[attr])
+        if col_idx >= len(cols):
+            return False
+        if cols[col_idx].strip().lower() != attr.lower():
+            return False
+    
+    return True
+
+
 def iter_listing(
     listing_path: str,
     attr_map: dict[str, str] | None = None,
     encoding: str = 'utf-8-sig',
     progress_interval: int = 1000,
+    has_header: bool | None = None,
 ) -> Iterator[FileEntry]:
     """Yield :class:`FileEntry` objects one row at a time from a CSV listing.
 
@@ -47,6 +84,10 @@ def iter_listing(
         a UTF-8 BOM if present.
     progress_interval:
         Log progress every this many entries. Set to 0 to disable.
+    has_header:
+        Whether the CSV has a header row. If *None* (default), auto-detect
+        by checking if the first row matches expected attribute names.
+        If *True*, always skip the first row. If *False*, never skip.
     """
     if attr_map is None:
         attr_map = CANONICAL_MAP
@@ -59,10 +100,27 @@ def iter_listing(
     with open(listing_path, newline='', encoding=encoding) as fh:
         reader = csv.reader(fh)
         processed = 0
+        first_row = True
         for lineno, cols in enumerate(reader, start=1):
             # Skip empty lines (all columns empty or blank)
             if not cols or all(c.strip() == '' for c in cols):
                 continue
+            
+            # Handle header row
+            if first_row:
+                first_row = False
+                skip_row = False
+                if has_header is True:
+                    skip_row = True
+                elif has_header is None:
+                    # Auto-detect: check if row looks like a header
+                    skip_row = _is_header_row(cols, attr_map)
+                # has_header=False means never skip
+                
+                if skip_row:
+                    logger.debug('Skipping header row: %s', cols)
+                    continue
+            
             try:
                 fe = FileEntry.from_listing_row(cols, attr_map)
                 processed += 1
@@ -89,6 +147,7 @@ def read_listing(
     attr_map: dict[str, str] | None = None,
     encoding: str = 'utf-8-sig',
     progress_interval: int = 1000,
+    has_header: bool | None = None,
 ) -> list[FileEntry]:
     """Load an entire CSV listing into a list of :class:`FileEntry` objects.
 
@@ -105,8 +164,11 @@ def read_listing(
         File encoding.  Defaults to ``'utf-8-sig'``.
     progress_interval:
         Log progress every this many entries. Set to 0 to disable.
+    has_header:
+        Whether the CSV has a header row. If *None* (default), auto-detect.
+        If *True*, always skip the first row. If *False*, never skip.
     """
-    return list(iter_listing(listing_path, attr_map, encoding, progress_interval))
+    return list(iter_listing(listing_path, attr_map, encoding, progress_interval, has_header))
 
 
 # ---------------------------------------------------------------------------
@@ -159,11 +221,35 @@ def read_md5sum_listing(
 # CSV listing — writing
 # ---------------------------------------------------------------------------
 
+def _generate_header_row(attr_map: dict[str, str]) -> list[str]:
+    """Generate a header row from attr_map keys in column order.
+    
+    Parameters
+    ----------
+    attr_map:
+        Column mapping (attribute name → column index).
+    
+    Returns
+    -------
+    list[str]
+        Header row with attribute names in column order.
+    """
+    # Find max column index to determine row width
+    max_col = max(int(idx) for idx in attr_map.values())
+    header = [''] * (max_col + 1)
+    
+    for attr, col_idx in attr_map.items():
+        header[int(col_idx)] = attr
+    
+    return header
+
+
 def write_listing(
     output_path: str,
     entries: list[FileEntry] | Iterator[FileEntry],
     attr_map: dict[str, str] | None = None,
     encoding: str = 'utf-8',
+    include_header: bool = False,
 ) -> int:
     """Write :class:`FileEntry` objects to a CSV listing file.
 
@@ -178,6 +264,9 @@ def write_listing(
         is used.
     encoding:
         Output file encoding.  Defaults to ``'utf-8'``.
+    include_header:
+        If *True*, write a header row with attribute names before data.
+        Defaults to *False*.
 
     Returns
     -------
@@ -190,6 +279,11 @@ def write_listing(
     count = 0
     with open(output_path, 'w', newline='', encoding=encoding) as fh:
         writer = csv.writer(fh)
+        
+        if include_header:
+            header = _generate_header_row(attr_map)
+            writer.writerow(header)
+        
         for entry in entries:
             row = entry.to_listing_row(attr_map)
             writer.writerow(row)

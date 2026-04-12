@@ -7,6 +7,8 @@ Generalises the ``--attr-map`` parsing originally found in
 
 from __future__ import annotations
 
+from typing import Tuple
+
 # ---------------------------------------------------------------------------
 # Attribute name constants
 # ---------------------------------------------------------------------------
@@ -55,6 +57,12 @@ CANONICAL_MAP: dict[str, str] = {
     'size': '8',
     'path': '9',
 }
+
+# Canonical header row (matches CANONICAL_MAP key order)
+CANONICAL_HEADER: Tuple[str, ...] = (
+    'creation', 'access', 'modify', 'checksum', 'entry_type',
+    'permissions', 'uid', 'gid', 'size', 'path',
+)
 
 
 # ---------------------------------------------------------------------------

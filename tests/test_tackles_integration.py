@@ -371,7 +371,11 @@ class TestValidateCopyGeneration:
         # Read and verify the CSV structure
         with open(output_csv, encoding='utf-8') as fh:
             reader = csv.reader(fh)
-            rows = list(reader)
+            all_rows = list(reader)
+
+        # First row is header (now default behavior)
+        header = all_rows[0]
+        rows = all_rows[1:]
 
         # At least: base dir + 2 files + subdir + nested file
         assert len(rows) >= 3
@@ -423,7 +427,10 @@ class TestValidateCopyGeneration:
 
         with open(output_csv, encoding='utf-8') as fh:
             reader = csv.reader(fh)
-            rows = list(reader)
+            all_rows = list(reader)
+
+        # Skip header row (first row)
+        rows = all_rows[1:]
 
         # All entries should be files — verify no directory paths appear
         # (directories would show up as paths without file extensions or as '.')
@@ -446,7 +453,10 @@ class TestValidateCopyGeneration:
 
         with open(output_csv, encoding='utf-8') as fh:
             reader = csv.reader(fh)
-            rows = list(reader)
+            all_rows = list(reader)
+
+        # Skip header row (first row)
+        rows = all_rows[1:]
 
         # All entries should be directories
         assert len(rows) > 0
@@ -940,11 +950,13 @@ class TestValidateCopyChecksum:
         assert count == 2
         assert output_csv.exists()
 
-        # Read and verify checksums
+        # Read and verify checksums (skip header row)
         with open(output_csv, encoding='utf-8') as fh:
             reader = csv.reader(fh)
-            rows = list(reader)
+            all_rows = list(reader)
 
+        # Skip header row
+        rows = all_rows[1:]
         assert len(rows) == 2
 
         # Build a path-to-checksum mapping
@@ -975,10 +987,12 @@ class TestValidateCopyChecksum:
             calculate_checksum=True,
         )
 
-        # Read and verify
+        # Read and verify (skip header row)
         with open(output_csv, encoding='utf-8') as fh:
             reader = csv.reader(fh)
-            rows = list(reader)
+            all_rows = list(reader)
+
+        rows = all_rows[1:]  # Skip header
 
         for row in rows:
             entry_type = row[self._COL_ENTRY_TYPE]
@@ -1011,8 +1025,10 @@ class TestValidateCopyChecksum:
 
         with open(output_csv, encoding='utf-8') as fh:
             reader = csv.reader(fh)
-            rows = list(reader)
+            all_rows = list(reader)
 
+        # Skip header row
+        rows = all_rows[1:]
         assert len(rows) == 1
         checksum = rows[0][self._COL_CHECKSUM]
 
@@ -1038,8 +1054,10 @@ class TestValidateCopyChecksum:
 
         with open(output_csv, encoding='utf-8') as fh:
             reader = csv.reader(fh)
-            rows = list(reader)
+            all_rows = list(reader)
 
+        # Skip header row
+        rows = all_rows[1:]
         assert len(rows) == 1
         checksum = rows[0][self._COL_CHECKSUM]
         assert checksum == '', 'Checksum should be empty when not requested'

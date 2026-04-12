@@ -1844,7 +1844,7 @@ class TestStreamingListingWriter:
         # Verify file contents
         with open(output_path, 'r') as f:
             lines = f.readlines()
-        assert len(lines) == 3
+        assert len(lines) == 4
 
     def test_context_manager(self, tmp_path):
         """StreamingListingWriter should work as context manager."""

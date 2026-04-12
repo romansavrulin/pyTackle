@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import pytest
 
 from common.FileEntry import FileEntry
-from common.attr_map import CANONICAL_MAP
+from common.attr_map import CANONICAL_MAP, CANONICAL_HEADER
 from common.listing import (
     iter_listing,
     iter_md5sum_listing,
@@ -155,3 +155,242 @@ class TestEdgeCases:
 
         # The malformed row should be skipped (not crash)
         assert len(entries) == 0
+
+
+# ------------------------------------------------------------------
+# Header support tests
+# ------------------------------------------------------------------
+
+class TestHeaderSupport:
+    """Test header reading and writing functionality."""
+
+    def test_iter_listing_explicit_has_header_true(self, tmp_path):
+        """Test that has_header=True always skips the first row."""
+        csv_path = str(tmp_path / "with_header.csv")
+        now = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        
+        # Write a file with a header
+        entries = [
+            FileEntry(
+                path="/tmp/file1.txt",
+                size=100,
+                creation=now,
+                access=now,
+                modify=now,
+                permissions="0o644",
+                uid=1000,
+                gid=1000,
+                checksum="md5:" + "ab" * 16,
+            )
+        ]
+        write_listing(csv_path, entries, include_header=True)
+        
+        # Read with explicit has_header=True
+        restored = list(iter_listing(csv_path, has_header=True))
+        assert len(restored) == 1
+        assert restored[0].path == "/tmp/file1.txt"
+
+    def test_iter_listing_has_header_false_reads_header_as_data(self, tmp_path, caplog):
+        """Test that has_header=False tries to read header as data (should fail/skip)."""
+        csv_path = str(tmp_path / "with_header.csv")
+        now = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        
+        # Write a file with a header
+        entries = [
+            FileEntry(
+                path="/tmp/file1.txt",
+                size=100,
+                creation=now,
+                access=now,
+                modify=now,
+                permissions="0o644",
+                uid=1000,
+                gid=1000,
+                checksum="md5:" + "ab" * 16,
+            )
+        ]
+        write_listing(csv_path, entries, include_header=True)
+        
+        import logging
+        with caplog.at_level(logging.WARNING):
+            # Read with has_header=False — should try to parse header as data
+            restored = list(iter_listing(csv_path, has_header=False))
+        
+        # Only the data row should be successfully parsed,
+        # the header row will fail because 'creation' is not a valid timestamp
+        assert len(restored) == 1
+        assert restored[0].path == "/tmp/file1.txt"
+
+    def test_iter_listing_auto_detection(self, tmp_path):
+        """Test that has_header=None auto-detects header row."""
+        csv_path = str(tmp_path / "with_header.csv")
+        now = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        
+        # Write a file with a header
+        entries = [
+            FileEntry(
+                path="/tmp/file1.txt",
+                size=100,
+                creation=now,
+                access=now,
+                modify=now,
+            )
+        ]
+        write_listing(csv_path, entries, include_header=True)
+        
+        # Read with auto-detection (default)
+        restored = list(iter_listing(csv_path))
+        assert len(restored) == 1
+        assert restored[0].path == "/tmp/file1.txt"
+
+    def test_iter_listing_auto_detection_no_header(self, tmp_path):
+        """Test that auto-detection correctly handles files without headers."""
+        csv_path = str(tmp_path / "no_header.csv")
+        now = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        
+        # Write a file without a header
+        entries = [
+            FileEntry(
+                path="/tmp/file1.txt",
+                size=100,
+                creation=now,
+                access=now,
+                modify=now,
+            ),
+            FileEntry(
+                path="/tmp/file2.txt",
+                size=200,
+                creation=now,
+                access=now,
+                modify=now,
+            ),
+        ]
+        write_listing(csv_path, entries, include_header=False)
+        
+        # Read with auto-detection — should not skip any rows
+        restored = list(iter_listing(csv_path))
+        assert len(restored) == 2
+        assert restored[0].path == "/tmp/file1.txt"
+        assert restored[1].path == "/tmp/file2.txt"
+
+    def test_write_listing_include_header_true(self, tmp_path):
+        """Test write_listing with include_header=True writes header row."""
+        csv_path = str(tmp_path / "with_header.csv")
+        now = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        
+        entries = [
+            FileEntry(
+                path="/tmp/file1.txt",
+                size=100,
+                creation=now,
+                access=now,
+                modify=now,
+            )
+        ]
+        write_listing(csv_path, entries, include_header=True)
+        
+        # Read raw CSV to verify header
+        with open(csv_path, newline="", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            rows = list(reader)
+        
+        assert len(rows) == 2  # header + 1 data row
+        # Check that header row contains expected attribute names
+        header_row = rows[0]
+        assert "creation" in header_row
+        assert "path" in header_row
+        assert "size" in header_row
+
+    def test_write_listing_include_header_false(self, tmp_path):
+        """Test write_listing with include_header=False writes no header."""
+        csv_path = str(tmp_path / "no_header.csv")
+        now = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        
+        entries = [
+            FileEntry(
+                path="/tmp/file1.txt",
+                size=100,
+                creation=now,
+                access=now,
+                modify=now,
+            )
+        ]
+        write_listing(csv_path, entries, include_header=False)
+        
+        # Read raw CSV to verify no header
+        with open(csv_path, newline="", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            rows = list(reader)
+        
+        assert len(rows) == 1  # just data row, no header
+        # First row should be data (path at index 9 for canonical map)
+        assert rows[0][9] == "/tmp/file1.txt"
+
+    def test_round_trip_with_headers(self, tmp_path):
+        """Test full round-trip: write with header, read with auto-detection."""
+        csv_path = str(tmp_path / "roundtrip.csv")
+        now = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        
+        original_entries = [
+            FileEntry(
+                path=f"/tmp/file{i}.txt",
+                size=100 + i,
+                creation=now,
+                access=now,
+                modify=now,
+                permissions="0o644",
+                uid=1000,
+                gid=1000,
+                checksum=f"md5:{'ab' * 16}",
+            )
+            for i in range(3)
+        ]
+        
+        # Write with header
+        count = write_listing(csv_path, original_entries, include_header=True)
+        assert count == 3
+        
+        # Read with auto-detection (should skip header)
+        restored = read_listing(csv_path)
+        assert len(restored) == 3
+        
+        for i, entry in enumerate(restored):
+            assert entry.path == f"/tmp/file{i}.txt"
+            assert entry.size == 100 + i
+            assert entry.creation == now
+            assert entry.checksum == f"md5:{'ab' * 16}"
+
+    def test_custom_attr_map_header(self, tmp_path):
+        """Test header generation with custom attr_map."""
+        csv_path = str(tmp_path / "custom_header.csv")
+        now = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        
+        # Custom mapping: path at 0, size at 1
+        custom_map = {"path": "0", "size": "1"}
+        
+        entries = [
+            FileEntry(
+                path="/tmp/file1.txt",
+                size=100,
+                creation=now,
+                access=now,
+                modify=now,
+            )
+        ]
+        write_listing(csv_path, entries, attr_map=custom_map, include_header=True)
+        
+        # Read raw CSV to verify header
+        with open(csv_path, newline="", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            rows = list(reader)
+        
+        assert len(rows) == 2
+        header_row = rows[0]
+        assert header_row[0] == "path"
+        assert header_row[1] == "size"
+        
+        # Read back with custom map and auto-detection
+        restored = read_listing(csv_path, attr_map=custom_map)
+        assert len(restored) == 1
+        assert restored[0].path == "/tmp/file1.txt"
+        assert restored[0].size == 100

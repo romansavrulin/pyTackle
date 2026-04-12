@@ -35,7 +35,7 @@ from common.fs_attrs import (
     set_creation_time,                               # noqa: F401 — re-exported
     set_access_modify_time,                          # noqa: F401 — re-exported
 )
-from common.listing import write_listing
+from common.streaming_csv import StreamingListingWriter
 from tackles.TackleFactory import TackleFactory
 
 logging.basicConfig(
@@ -377,7 +377,11 @@ def generate_listing(
     for entry in entries:
         entry.path = os.path.relpath(entry.path, base)
 
-    return write_listing(output_path, entries)
+    # Write using streaming writer
+    with StreamingListingWriter(output_path) as writer:
+        for entry in entries:
+            writer.write(entry)
+    return writer.count
 
 
 # ---------------------------------------------------------------------------

@@ -104,6 +104,7 @@ pyTackle MediaIntegrityCheck [OPTIONS] DIRECTORY
 | `--timeout SECONDS` | Per-file validation timeout in seconds (default: 300) |
 | `--check-level` | Validation level: basic, default, or pedantic (default: `default`) |
 | `-v, --verbose` | Enable verbose logging for debugging (flag, default: False) |
+| `--debug-log PATH` | Write detailed debug output to a CSV file (see [Debug Logging](#debug-logging)) |
 
 ## Validation Levels
 
@@ -174,6 +175,61 @@ pyTackle MediaIntegrityCheck /media/videos --check-level pedantic --verbose
 - Output goes to stderr
 - Useful for troubleshooting validation issues or understanding tool behavior
 
+## Debug Logging
+
+Use `--debug-log <path.csv>` to write detailed debug information for every file validated. This produces a structured CSV file with complete execution context for each validation.
+
+### Debug Log Format
+
+The debug log CSV includes 18 columns with a header row:
+
+| Column | Description |
+|--------|-------------|
+| `file_path` | Absolute path to the file |
+| `file_size` | File size in bytes |
+| `file_extension` | File extension (e.g., `.mp4`) |
+| `tool_binary` | Tool binary name (e.g., `ffprobe`) |
+| `tool_package` | apt package name (e.g., `ffmpeg`) |
+| `command` | Full command line executed |
+| `check_level` | Validation level used (basic/default/pedantic) |
+| `exit_code` | Tool exit code |
+| `stdout` | Full stdout output (preserved with CSV escaping) |
+| `stderr` | Full stderr output (preserved with CSV escaping) |
+| `stderr_regex` | Regex pattern used for stderr checking |
+| `stdout_regex` | Regex pattern used for stdout checking |
+| `stderr_matched` | Whether stderr matched the error pattern (True/False) |
+| `stdout_matched` | Whether stdout matched the error pattern (True/False) |
+| `result` | Validation result (VALID/CORRUPT/UNTESTABLE/TOOL_MISSING/TOOL_ERROR) |
+| `decision_reason` | Human-readable explanation of the decision |
+| `error_message` | Error details (for TOOL_ERROR/TOOL_MISSING) |
+| `duration_ms` | Validation time in milliseconds |
+
+### Usage Example
+
+```bash
+# Run validation with debug logging
+pyTackle MediaIntegrityCheck /media/library -o results --debug-log debug.csv
+
+# Combine with verbose mode for both terminal and file output
+pyTackle MediaIntegrityCheck /media/library -o results --debug-log debug.csv -v
+```
+
+### Use Cases
+
+- **Post-mortem analysis** — Review why specific files were marked corrupt
+- **Tool debugging** — Examine exact command lines and tool output
+- **Pattern tuning** — Check which stderr/stdout patterns are matching
+- **Performance profiling** — Analyze validation time per file
+- **Batch processing** — Import into a database or spreadsheet for analysis
+
+### Notes
+
+- Debug log uses proper CSV escaping to preserve newlines and special characters in tool output
+- File is created with a header row
+- Uses eager file opening (file created immediately when `--debug-log` is specified)
+- Flushed after each write for reliability
+- For technical implementation details, see [StreamingCsv](StreamingCsv.md)
+
 ## Output Files
 
 MediaIntegrityCheck produces up to five output CSV files, depending on validation results. Only non-empty listings are created.
@@ -188,7 +244,7 @@ MediaIntegrityCheck produces up to five output CSV files, depending on validatio
 
 ### CSV Format
 
-Output files use the canonical 10-column CSV format (no header row):
+Output files use the canonical 10-column CSV format with a header row:
 
 | Column | Index | Description |
 |--------|-------|-------------|

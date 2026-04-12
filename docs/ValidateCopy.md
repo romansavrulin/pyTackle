@@ -208,7 +208,7 @@ pyTackle ValidateCopy \
 
 ## Listing Format
 
-ValidateCopy uses a canonical 10-column CSV format (no header row):
+ValidateCopy uses a canonical 10-column CSV format. By default, generated listings include a header row:
 
 | Column | Index | Description |
 |--------|-------|-------------|
@@ -228,6 +228,10 @@ ValidateCopy uses a canonical 10-column CSV format (no header row):
 ```csv
 2024-01-15T10:30:00,2024-03-20T14:22:33,2024-01-15T10:30:00,d41d8cd98f00b204e9800998ecf8427e,f,0644,501,20,1234,photos/vacation/IMG_001.jpg
 ```
+
+### Header Auto-Detection
+
+When reading listings (in validate or apply mode), ValidateCopy automatically detects whether the first row is a header. The detection works by checking if the column values match the expected attribute names (e.g., `creation`, `access`, `modify`, etc.). Header rows are automatically skipped.
 
 ### Legacy Format Support
 
