@@ -6,12 +6,13 @@ Collection of command-line tools ("tackles") for various automation tasks.
 
 | Tackle | Description |
 |--------|-------------|
-| [ValidateCopy](ValidateCopy.md) | Verify file copy integrity and restore metadata |
-| [MediaIntegrityCheck](MediaIntegrityCheck.md) | Validate media file integrity using Linux system tools |
-| [FclonesDuplicates](FclonesDuplicates.md) | Parse fclones duplicate file reports |
 | [CopyValidateMD5](CopyValidateMD5.md) | Simple MD5-based copy validation |
-| ZfsIotop | ZFS I/O monitoring |
+| [CsvToSqlite](CsvToSqlite.md) | Import any CSV into SQLite with auto type detection |
+| [FclonesDuplicates](FclonesDuplicates.md) | Parse fclones duplicate file reports |
 | GetCoursera | Coursera content downloader |
+| [MediaIntegrityCheck](MediaIntegrityCheck.md) | Validate media file integrity using Linux system tools |
+| [ValidateCopy](ValidateCopy.md) | Verify file copy integrity and restore metadata |
+| ZfsIotop | ZFS I/O monitoring |
 
 ## Developer Documentation
 
