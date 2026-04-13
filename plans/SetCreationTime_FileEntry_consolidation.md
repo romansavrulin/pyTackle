@@ -1,3 +1,10 @@
+---
+status: IMPLEMENTED
+implemented_in: common/FileEntry.py, tackles/ValidateCopy.py
+last_reviewed: 2026-04-13
+notes: validate() method implemented in FileEntry. apply_to_fs() used in ValidateCopy. Meta-selector support removed from FileEntry.from_listing_row() as planned.
+---
+
 # SetCreationTime Refactoring — Use FileEntry.apply_to_fs()
 
 ## Design Principles

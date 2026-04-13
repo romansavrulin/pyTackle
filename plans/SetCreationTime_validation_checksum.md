@@ -1,3 +1,10 @@
+---
+status: IMPLEMENTED
+implemented_in: tackles/ValidateCopy.py, common/attr_map.py
+last_reviewed: 2026-04-13
+notes: All three features implemented in ValidateCopy - checksum calculation during generate (--attrs checksum), empty attr-map default with canonical mapping, and validation mode (--validate). Mode selection uses new CLI structure (--validate/--generate/--apply).
+---
+
 # SetCreationTime: Validation, Checksum, and Attr-Map Default Changes
 
 ## Overview

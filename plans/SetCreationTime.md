@@ -1,3 +1,10 @@
+---
+status: SUPERSEDED
+implemented_in: tackles/ValidateCopy.py
+last_reviewed: 2026-04-13
+notes: This plan was superseded by ValidateCopy tackle which consolidates all timestamp functionality. There is no SetCreationTime.py - use ValidateCopy with --apply mode instead.
+---
+
 # SetCreationTime Tackle — Architecture Plan
 
 ## Overview

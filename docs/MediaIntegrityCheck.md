@@ -32,8 +32,7 @@ MediaIntegrityCheck uses external validation tools. Install them via apt:
 | `vorbis-tools` | ogginfo | OGG |
 | `opus-tools` | opusinfo | Opus |
 | `jpeginfo` | jpeginfo | JPEG |
-| `pngcheck` | pngcheck | PNG |
-| `imagemagick` | identify | GIF, BMP, TIFF, WebP, HEIC |
+| `imagemagick` | identify | PNG, GIF, BMP, TIFF, WebP, HEIC |
 | `libimage-exiftool-perl` | exiftool | RAW formats (CR2, NEF, ARW, DNG) |
 | `unzip` | unzip | ZIP, DOCX, XLSX, PPTX |
 | `tar` | tar | TAR archives |
@@ -55,7 +54,7 @@ Install all supported tools at once:
 # Complete installation command
 apt-get install -y \
     ffmpeg mp3val flac vorbis-tools opus-tools \
-    jpeginfo pngcheck imagemagick libimage-exiftool-perl \
+    jpeginfo imagemagick libimage-exiftool-perl \
     unzip gzip bzip2 xz-utils lz4 zstd p7zip-full unrar \
     poppler-utils qpdf epubcheck \
     unrtf antiword libxml2-utils djvulibre-bin
@@ -305,7 +304,7 @@ Output files use the canonical 10-column CSV format with a header row:
 | Extension | Tool | Package | Testability | Notes |
 |-----------|------|---------|-------------|-------|
 | .jpg/.jpeg | jpeginfo | jpeginfo | ✅ Full | JPEG image |
-| .png | pngcheck | pngcheck | ✅ Full | PNG image |
+| .png | identify | imagemagick | ✅ Full | PNG image |
 | .gif | identify | imagemagick | ✅ Full | GIF image |
 | .bmp | identify | imagemagick | ✅ Full | Bitmap image |
 | .tiff/.tif | identify | imagemagick | ✅ Full | Tagged Image File Format |

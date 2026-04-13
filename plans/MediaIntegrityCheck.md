@@ -1,3 +1,10 @@
+---
+status: IMPLEMENTED
+implemented_in: tackles/MediaIntegrityCheck.py
+last_reviewed: 2026-04-13
+notes: Fully implemented with tool registry, 5-category validation (VALID/CORRUPT/UNTESTABLE/TOOL_MISSING/TOOL_ERROR), 3 check levels (basic/default/pedantic), stderr/stdout pattern matching, debug logging, and streaming output.
+---
+
 # MediaIntegrityCheck Tackle Architecture Plan
 
 ## Overview

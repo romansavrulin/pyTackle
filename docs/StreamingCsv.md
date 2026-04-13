@@ -88,6 +88,8 @@ StreamingListingWriter(
     path: str,
     attr_map: Optional[Dict[str, str]] = None,
     include_header: bool = True,
+    flush_on_write: bool = True,
+    lazy_open: bool = False,
 )
 ```
 
@@ -96,10 +98,12 @@ StreamingListingWriter(
 | `path` | str | required | Path to the output CSV file |
 | `attr_map` | Dict[str, str] | `CANONICAL_MAP` | Column mapping for serialization |
 | `include_header` | bool | True | Write header row when file opens |
+| `flush_on_write` | bool | True | Flush after each write |
+| `lazy_open` | bool | False | If True, file opens on first write |
 
 ### Behavior
 
-- Uses lazy opening (file created on first write)
+- Uses **eager** opening by default (file created when context entered)
 - Flushes after each write for reliability
 - Default mapping produces 10-column canonical format
 - Header row uses attribute names from `attr_map` keys

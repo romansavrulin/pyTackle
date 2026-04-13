@@ -1,3 +1,10 @@
+---
+status: IMPLEMENTED
+implemented_in: common/FileEntry.py, common/attr_map.py, common/checksum.py, common/fs_attrs.py, common/listing.py
+last_reviewed: 2026-04-13
+notes: All planned features implemented - FileEntry dataclass, factory methods, attribute access, copy_attrs_from, apply_to_fs, validate, checksum calculation, serialization. Column order was changed per SetCreationTime_entry_type_refactor.md.
+---
+
 # FileEntry Object Model — Architecture Plan
 
 ## Overview

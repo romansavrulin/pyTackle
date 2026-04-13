@@ -1,3 +1,10 @@
+---
+status: IMPLEMENTED
+implemented_in: tackles/CsvToSqlite.py
+last_reviewed: 2026-04-13
+notes: All planned features fully implemented - two-pass streaming, auto type detection, column sanitization, smart ID handling, unique constraints, time-based progress, dry-run mode
+---
+
 # CsvToSqlite Design Guide
 
 **Status:** Planning  

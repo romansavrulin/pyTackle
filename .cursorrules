@@ -1,0 +1,113 @@
+# pyTackle Project Rules
+
+## Pre-commit Checklist
+
+### Documentation Sync Rule
+Before committing changes to any tackle in `tackles/`, verify that the corresponding documentation in `docs/` is up-to-date with the implementation:
+- Update CLI options if they've changed
+- Update behavior descriptions to match current implementation
+- Update examples if usage patterns have changed
+- Ensure all new features are documented
+
+### Plans Update Rule
+Before committing changes that affect features described in `plans/`, update the corresponding plan document:
+- If a plan becomes fully implemented, update its status header to `IMPLEMENTED`
+- If implementation diverges from the plan, add notes explaining the divergence
+- Keep plan documents as historical records of design decisions
+
+### README Update Rule
+When adding or removing tackles, update the "Available Tackles" table in the main `README.md`:
+- Add new tackles with their description and documentation link
+- Remove entries for deleted tackles
+- Keep the table sorted alphabetically
+
+## Development Guidelines
+
+### Backwards Compatibility Rule
+When making breaking changes to CLI interfaces or public APIs:
+- **Ask** whether backwards compatibility should be maintained rather than maintaining it by default
+- Consider options: aliases for old flags, deprecation warnings, version bumps
+- Document the decision in the commit message
+- If maintaining compatibility, clearly mark deprecated features
+
+### Code Reuse Rule
+When implementing new functionality:
+
+1. **Check existing patterns first** - Review `common/` for reusable components:
+   - `FileEntry` - File metadata container with checksum support
+   - `StreamingCsv` - Memory-efficient CSV reading/writing
+   - `checksum` - File hashing utilities (MD5, SHA256, etc.)
+   - `attr_map` - Attribute mapping between different schemas
+   - `listing` - File listing and directory traversal
+   - `fs_attrs` - Filesystem extended attributes handling
+
+2. **Evaluate reusability** - Ask if a new tackle's concept or data type should be:
+   - Treated as a wider/reusable concept
+   - Extracted to `common/` for use by multiple tackles
+   - Documented as a shared component
+
+3. **Prefer composition** - Favor reuse of existing patterns over duplication
+
+## Git Workflow
+
+### Branching Rule
+New tasks should be started in a new branch and merged back to trunk (main) after work is complete:
+
+1. **Create a feature branch** - Before starting work on a new task:
+   - Branch from `main` with a descriptive name (e.g., `feature/add-csv-export`, `fix/checksum-validation`)
+   - Keep each feature/task isolated in its own branch
+
+2. **Work in the branch** - Make all commits related to the task in the feature branch
+
+3. **Merge to main** - After work is complete:
+   - Ensure all tests pass
+   - Code review can happen before merging
+   - Merge to `main` to keep the trunk stable
+   - Delete the feature branch after successful merge
+
+This ensures:
+- Each feature/task is isolated and can be reviewed independently
+- The main branch remains stable and deployable
+- Easy rollback if issues are discovered
+
+## Task Startup Checklist
+
+### Documentation Drift Detection Rule
+When starting work on a tackle, first compare the implementation against its documentation to detect "drift" - situations where manual fixes/commits were made without updating plans/documentation:
+
+1. **Compare code vs docs** - Before making changes:
+   - Review the tackle implementation in `tackles/`
+   - Compare against documentation in `docs/` and plans in `plans/`
+   - Look for discrepancies indicating undocumented changes
+
+2. **If discrepancies are found** - Do NOT proceed automatically. Instead:
+   - **Ask the user** what to do before making any changes
+   - Present options:
+     - Update docs to match the current code (code is authoritative)
+     - Revert code to match docs (docs are authoritative)
+     - Proceed with current state and document the decision
+   - Wait for user decision before continuing
+
+3. **After resolving drift** - Persist the validated state:
+   - Update documentation to reflect the agreed-upon state
+   - Ensure docs and code are synchronized
+   - Note any intentional divergences
+
+This prevents confusion about what's "correct" - the docs or the code - and ensures conscious decisions about the source of truth.
+
+## Architecture Principles
+
+### Tackle Structure
+- Each tackle should be a self-contained module in `tackles/`
+- Common functionality belongs in `common/`
+- Tests go in `tests/` with `test_` prefix matching the module name
+
+### Documentation Structure
+- User-facing documentation: `docs/`
+- Design plans and proposals: `plans/`
+- Implementation notes: inline comments or plan documents
+
+### Testing Requirements
+- New tackles should have corresponding test files
+- Tests should cover CLI interface and core functionality
+- Use fixtures from `conftest.py` for common test setup

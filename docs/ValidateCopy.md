@@ -41,8 +41,7 @@ Generates a listing file from the filesystem.
 pyTackle ValidateCopy --generate output.csv --attrs checksum /path/to/scan
 ```
 
-- `--attrs` specifies which attributes to include in the listing
-- Checksum calculation is ON by default for files
+- `--attrs checksum` enables checksum calculation (off by default)
 - Use `--types fd` to include both files and directories
 
 ### Apply Mode (`--apply <listing>`)
@@ -88,7 +87,7 @@ The `--attrs` option behaves differently depending on the active mode:
 | Mode | `--attrs` Meaning | Default |
 |------|-------------------|---------|
 | **Validate** | Attributes to compare | `size,creation,permissions,uid,gid,checksum,entry_type,path` |
-| **Generate** | Include checksum in listing or not | `checksum` |
+| **Generate** | Include checksum in listing (use `--attrs checksum` to enable) | (no checksum) |
 | **Apply** | Attributes to set on filesystem | `creation,access,modify` |
 
 ### Validation Options

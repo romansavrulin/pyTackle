@@ -1,3 +1,10 @@
+---
+status: IMPLEMENTED
+implemented_in: tackles/FclonesDuplicates.py
+last_reviewed: 2026-04-13
+notes: Core functionality implemented - fclones report parsing, path normalization, FileEntry generation, streaming output. Phase 2+ features (checksum recalculation, group filtering) not yet implemented.
+---
+
 # FclonesDuplicates Tackle Design
 
 ## Overview

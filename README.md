@@ -14,19 +14,32 @@ pip install -e .
 pytackle <subcommand> [options]
 ```
 
-Available subcommands:
+## Available Tackles
 
-| Subcommand | Description |
-|---|---|
-| `ValidateCopy` | Verify file copy integrity and restore metadata |
-| `CopyValidateMD5` | Copy files listed in an MD5 manifest, verifying checksums at source and destination |
-| `ZfsIotop` | ZFS I/O monitoring |
-| `GetCoursera` | Coursera content downloader |
-| `TestTackle` | Minimal placeholder tackle |
+| Tackle | Description | Docs |
+|--------|-------------|------|
+| `CopyValidateMD5` | Copy files with MD5 validation | [docs](docs/CopyValidateMD5.md) |
+| `CsvToSqlite` | Convert CSV files to SQLite database | [docs](docs/CsvToSqlite.md) |
+| `FclonesDuplicates` | Find and manage duplicate files using fclones | [docs](docs/FclonesDuplicates.md) |
+| `GetCoursera` | Scrape GetCourse.ru educational platform content | [docs](docs/GetCoursera.md) |
+| `MediaIntegrityCheck` | Validate media file integrity (video/audio/images) | [docs](docs/MediaIntegrityCheck.md) |
+| `ValidateCopy` | Validate file copies with checksums and attributes | [docs](docs/ValidateCopy.md) |
+| `ZfsIotop` | ZFS I/O statistics visualization | [docs](docs/ZfsIotop.md) |
 
 📚 **[Full Documentation](docs/README.md)** — Detailed guides for each tackle
 
-### CopyValidateMD5
+## Common Modules
+
+The `common/` package provides shared utilities used across tackles:
+
+| Module | Description |
+|--------|-------------|
+| `FileEntry` | File metadata handling and representation |
+| `StreamingCsv` | Memory-efficient CSV processing for large files |
+| `checksum` | File hashing utilities (MD5, SHA256, etc.) |
+| `attr_map` | Attribute mapping utilities for metadata transformation |
+
+### Example: CopyValidateMD5
 
 ```bash
 pytackle CopyValidateMD5 --from-dir <src> --to-dir <dst> --from-file <md5-manifest>

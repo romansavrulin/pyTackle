@@ -1,3 +1,10 @@
+---
+status: IMPLEMENTED
+implemented_in: tackles/ValidateCopy.py
+last_reviewed: 2026-04-13
+notes: New CLI structure fully implemented with mutually exclusive mode group (--validate/--generate/--apply), unified --attrs, progress logging, and startup settings logging. Backward compatibility layer with deprecation warnings not yet implemented.
+---
+
 # ValidateCopy CLI Refactoring and Logging Improvements
 
 ## Overview

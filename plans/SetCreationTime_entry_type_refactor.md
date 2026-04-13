@@ -1,3 +1,10 @@
+---
+status: IMPLEMENTED
+implemented_in: common/FileEntry.py, common/attr_map.py
+last_reviewed: 2026-04-13
+notes: Entry type normalization implemented in FileEntry. New CANONICAL_MAP column order applied. PowerShell format support dropped per plan. normalize_entry_type() moved to FileEntry.py.
+---
+
 # SetCreationTime Refactoring — Comprehensive Plan
 
 This plan covers:

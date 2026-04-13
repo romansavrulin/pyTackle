@@ -1,3 +1,10 @@
+---
+status: SUPERSEDED
+implemented_in: tackles/ValidateCopy.py
+last_reviewed: 2026-04-13
+notes: The SetCreationTime tackle was never created as a separate file. Instead, ValidateCopy was implemented with all the planned functionality - FileEntry integration, parse_listing, resolve_selector, classify_entry patterns. This plan's goals are fully realized in ValidateCopy.
+---
+
 # SetCreationTime Refactoring Plan — Migrate to FileEntry
 
 ## Goal
