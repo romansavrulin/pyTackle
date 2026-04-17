@@ -187,8 +187,16 @@ def _iter_rows(
         reader = csv.reader(fh, delimiter=delimiter)
         if skip_header:
             next(reader, None)
-        yield from reader
-
+        count = 0
+        while True:
+            try:
+                for row in reader:
+                    yield row
+                    count += 1
+                break  # Если дошли до конца без ошибок
+            except Exception as e:
+                logger.error("Error scanning types: %s on row %d", e, count)
+                pass #raise e
 
 def _coerce(value: str, col_type: str) -> int | float | str | None:
     """Map a raw CSV string to the correct Python type for SQLite binding."""
@@ -249,14 +257,22 @@ def _scan_types(
             for i in range(n)
         ]
         count = 0
+        error_count = 0
 
-        for row in reader:
-            for i, raw in enumerate(row[:n]):
-                states[i].feed(raw)
-            count += 1
+        while True:
+            try:
+                for row in reader:
+                    for i, raw in enumerate(row[:n]):
+                        states[i].feed(raw)
+                    count += 1
+                break #break on success
+            except Exception as e:
+                logger.error("Error scanning types: %s on row %d", e, count)
+                count += 1 #continue on error
+                error_count += 1
 
     logger.debug("Pass 1 complete – %d rows scanned", count)
-    return original_headers, sanitized_headers, states, count
+    return original_headers, sanitized_headers, states, count-error_count
 
 
 # ── Main routine ───────────────────────────────────────────────────────────────
