@@ -505,15 +505,15 @@ class DebugLogWriter(StreamingCsvWriter[DebugRecord]):
             record.command or '',
             record.check_level,
             str(record.exit_code) if record.exit_code is not None else '',
-            record.stdout or '',
-            record.stderr or '',
+            (record.stdout or '').replace('\n', '\\n').replace('\r', ' ').replace('"', '`')[:2500],
+            (record.stderr or '').replace('\n', '\\n').replace('\r', ' ').replace('"', '`')[:2500],
             record.stderr_regex or '',
             record.stdout_regex or '',
             str(record.stderr_matched) if record.stderr_matched is not None else '',
             str(record.stdout_matched) if record.stdout_matched is not None else '',
             record.result,
             record.decision_reason,
-            record.error_message or '',
+            (record.error_message or '').replace('\n', '\\n').replace('\r', ' ').replace('"', '`')[:2500],
             str(record.duration_ms) if record.duration_ms is not None else '',
         ]
 

@@ -88,7 +88,7 @@ class StreamingCsvWriter(ABC, Generic[T]):
         """Open the file on demand (for lazy_open mode)."""
         if self._fh is None:
             self._fh = open(self.path, 'w', newline='', encoding='utf-8')
-            self._writer = csv.writer(self._fh)
+            self._writer = csv.writer(self._fh, quoting=csv.QUOTE_MINIMAL)
             if self._header:
                 self._writer.writerow(self._header)
                 self._fh.flush()
