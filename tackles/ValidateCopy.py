@@ -280,6 +280,7 @@ def generate_listing(
     allowed_types: set,
     calculate_checksum: bool = False,
     checksum_algorithm: str = 'md5',
+    error_csv_path: Optional[Path] = None,
 ) -> int:
     """Walk *base_dir* and write a canonical 10-column CSV listing to *output_path*.
 
@@ -289,96 +290,111 @@ def generate_listing(
     If *calculate_checksum* is True, checksums are computed for files
     (entry_type='f') using the specified *checksum_algorithm*.
 
+    If *error_csv_path* is provided, errors encountered during stat or checksum
+    operations are written to the error CSV file.
+
     Returns the number of entries written.
     """
     base = os.path.normpath(base_dir)
+    error_count = 0
 
-    def _collect_entries() -> List[FileEntry]:
-        """Yield :class:`FileEntry` objects for every matching path."""
+    # Use provided error_csv_path or generate one from output_path
+    if error_csv_path is None:
+        error_csv_path = get_error_filename(output_path)
 
-        progress_interval = 1000
-        processed = 0
+    with StreamingErrorWriter(error_csv_path) as error_writer:
+        def _collect_entries() -> List[FileEntry]:
+            """Yield :class:`FileEntry` objects for every matching path."""
+            nonlocal error_count
 
-        entries = []
+            progress_interval = 1000
+            processed = 0
 
-        for dirpath, dirnames, filenames in os.walk(base):
-            # Collect all full paths in this directory level
-            paths: List[str] = []
-            if 'd' in allowed_types:
-                paths.extend(
-                    os.path.join(dirpath, d) for d in dirnames
-                )
-            if 'f' in allowed_types:
-                paths.extend(
-                    os.path.join(dirpath, f) for f in filenames
-                    if not os.path.islink(os.path.join(dirpath, f))
-                )
-            if 'l' in allowed_types:
-                # Symlinks among files
-                paths.extend(
-                    os.path.join(dirpath, f) for f in filenames
-                    if os.path.islink(os.path.join(dirpath, f))
-                )
-                # Symlinks among dirs
-                paths.extend(
-                    os.path.join(dirpath, d) for d in dirnames
-                    if os.path.islink(os.path.join(dirpath, d))
-                )
+            entries = []
 
-            # Also include the directory itself if it's the base
-            if dirpath == base and 'd' in allowed_types:
-                paths.insert(0, dirpath)
+            for dirpath, dirnames, filenames in os.walk(base):
+                # Collect all full paths in this directory level
+                paths: List[str] = []
+                if 'd' in allowed_types:
+                    paths.extend(
+                        os.path.join(dirpath, d) for d in dirnames
+                    )
+                if 'f' in allowed_types:
+                    paths.extend(
+                        os.path.join(dirpath, f) for f in filenames
+                        if not os.path.islink(os.path.join(dirpath, f))
+                    )
+                if 'l' in allowed_types:
+                    # Symlinks among files
+                    paths.extend(
+                        os.path.join(dirpath, f) for f in filenames
+                        if os.path.islink(os.path.join(dirpath, f))
+                    )
+                    # Symlinks among dirs
+                    paths.extend(
+                        os.path.join(dirpath, d) for d in dirnames
+                        if os.path.islink(os.path.join(dirpath, d))
+                    )
 
-            for full_path in paths:
-                try:
-                    fe = FileEntry.from_fs_path(full_path)
-                except OSError as exc:
-                    logger.warning('Cannot stat %s: %s', full_path, exc)
-                    continue
-                
-                processed += 1
+                # Also include the directory itself if it's the base
+                if dirpath == base and 'd' in allowed_types:
+                    paths.insert(0, dirpath)
+
+                for full_path in paths:
+                    try:
+                        fe = FileEntry.from_fs_path(full_path)
+                    except OSError as exc:
+                        error_msg = f'Cannot stat: {exc}'
+                        logger.error('%s: %s', full_path, error_msg)
+                        # Create a minimal FileEntry for error reporting
+                        error_fe = FileEntry(path=full_path)
+                        error_writer.write((error_fe, error_msg))
+                        error_count += 1
+                        continue
                     
-                # Progress logging during loading
-                if processed % progress_interval == 0:
-                    logger.info(
-                        'Collecting entries from FS: %d',
-                        processed
-                    )
-                entries.append(fe)
-                #yield fe
-        return entries
+                    processed += 1
+                        
+                    # Progress logging during loading
+                    if processed % progress_interval == 0:
+                        logger.info(
+                            'Collecting entries from FS: %d',
+                            processed
+                        )
+                    entries.append(fe)
+                    #yield fe
+            return entries
 
-    logger.info("Collecting fs...")
-    entries = _collect_entries()
-    # Calculate checksum for files if requested (before changing path!)
-    logger.info(f"Collected {len(entries)} entries")
+        logger.info("Collecting fs...")
+        entries = _collect_entries()
+        # Calculate checksum for files if requested (before changing path!)
+        logger.info(f"Collected {len(entries)} entries")
 
-    if calculate_checksum:
-        logger.info(f"Calculating checksums...")
-        total_lines = len(entries)
-        progress_interval = total_lines / 1000
-        if progress_interval < 1:
-            progress_interval = 1
-        if progress_interval > 100:
-            progress_interval = 100
-        processed = 0
-        for entry in entries:
-            processed += 1
-            if entry.entry_type == 'f':
-                # Progress logging during loading
-                if processed % progress_interval == 0:
-                    pct = (processed / total_lines) * 100
-                    logger.info(
-                        'Calculating checksums: %d/%d (%.1f%%)',
-                        processed, total_lines, pct
-                    )
-                try:
-                    entry.calculate_checksum(algorithm=checksum_algorithm)
-                except OSError as exc:
-                    logger.warning(
-                        'Cannot calculate checksum for %s: %s',
-                        entry.path, exc,
-                    )
+        if calculate_checksum:
+            logger.info(f"Calculating checksums...")
+            total_lines = len(entries)
+            progress_interval = total_lines / 1000
+            if progress_interval < 1:
+                progress_interval = 1
+            if progress_interval > 100:
+                progress_interval = 100
+            processed = 0
+            for entry in entries:
+                processed += 1
+                if entry.entry_type == 'f':
+                    # Progress logging during loading
+                    if processed % progress_interval == 0:
+                        pct = (processed / total_lines) * 100
+                        logger.info(
+                            'Calculating checksums: %d/%d (%.1f%%)',
+                            processed, total_lines, pct
+                        )
+                    try:
+                        entry.calculate_checksum(algorithm=checksum_algorithm)
+                    except OSError as exc:
+                        error_msg = f'Cannot calculate checksum: {exc}'
+                        logger.error('%s: %s', entry.path, error_msg)
+                        error_writer.write((entry, error_msg))
+                        error_count += 1
 
     # Convert all paths to relative (after checksum calculation which needs full paths)
     for entry in entries:
@@ -388,6 +404,10 @@ def generate_listing(
     with StreamingListingWriter(output_path) as writer:
         for entry in entries:
             writer.write(entry)
+
+    if error_count > 0:
+        logger.info('Errors written to: %s', error_csv_path)
+
     return writer.count
 
 
@@ -482,11 +502,11 @@ class ValidateCopy(TackleFactory):
         subparser.add_argument(
             '--types',
             type=str,
-            default='d',
+            default='d,f',
             help=(
                 'Comma-separated list of entry types to process: '
                 'f (file), d (directory), l (symlink).  '
-                'Default: "d" (directories only).  '
+                'Default: "d,f" (directories and files).  '
                 'Example: --types="f,d,l"'
             ),
         )
@@ -634,6 +654,9 @@ class ValidateCopy(TackleFactory):
             attrs_list = [a.strip().lower() for a in options.attrs.split(',') if a.strip()]
             self.calculate_checksum = 'checksum' in attrs_list
 
+        # Generate error CSV path from output path
+        self.error_csv_path: Path = get_error_filename(self.generate_listing_path)
+
     def _init_validate_mode(self, options) -> None:
         """Initialize validate mode settings."""
         self.generate_listing_path: Optional[str] = None
@@ -645,6 +668,9 @@ class ValidateCopy(TackleFactory):
         if not os.path.isfile(self.listing_path):
             logger.error('Listing file not found: %s', self.listing_path)
             sys.exit(1)
+
+        # Generate error CSV path
+        self.error_csv_path: Path = get_error_filename(self.listing_path)
 
         # Handle --attrs for validate mode
         # Default: all available attributes
@@ -682,6 +708,9 @@ class ValidateCopy(TackleFactory):
         if not os.path.isfile(self.listing_path):
             logger.error('Listing file not found: %s', self.listing_path)
             sys.exit(1)
+
+        # Generate error CSV path
+        self.error_csv_path: Path = get_error_filename(self.listing_path)
 
         # Handle --attrs for apply mode
         # Default: creation, access, modify (timestamp attributes)
@@ -814,8 +843,10 @@ class ValidateCopy(TackleFactory):
         if mode_name == 'validate':
             logger.info('Validate attributes: %s', ', '.join(self.validate_attrs))
             logger.info('Quiet mode: %s', 'enabled' if self.quiet else 'disabled')
+            logger.info('Error CSV: %s', self.error_csv_path)
         elif mode_name == 'apply':
             logger.info('Attribute map: %s', self.attr_map)
+            logger.info('Error CSV: %s', self.error_csv_path)
         elif mode_name == 'copy':
             logger.info('Target directory: %s', self.target_dir)
             logger.info('Error CSV: %s', self.error_csv_path)
@@ -829,6 +860,7 @@ class ValidateCopy(TackleFactory):
             logger.info('Calculate checksum: %s', 'enabled' if self.calculate_checksum else 'disabled')
             if self.calculate_checksum:
                 logger.info('Checksum algorithm: %s', self.checksum_algorithm)
+            logger.info('Error CSV: %s', self.error_csv_path)
 
         if self.dry_run:
             logger.info('Dry-run: ENABLED (no changes will be made)')
@@ -855,6 +887,7 @@ class ValidateCopy(TackleFactory):
                 self.allowed_types,
                 calculate_checksum=self.calculate_checksum,
                 checksum_algorithm=self.checksum_algorithm,
+                error_csv_path=self.error_csv_path,
             )
             logger.info(
                 'Generated listing with %d entries: %s',
@@ -954,41 +987,41 @@ class ValidateCopy(TackleFactory):
         
         logger.info('Validating %d entries...', total)
 
-        for idx, fe in enumerate(entries, start=1):
-            rel_path = getattr(fe, '_rel_path', fe.path)
-            
-            # Type filter
-            if fe.entry_type and fe.entry_type not in self.allowed_types:
-                logger.debug(
-                    'Skipping %s (type=%s, allowed=%s)',
-                    rel_path, fe.entry_type, self.allowed_types,
-                )
-                skipped += 1
-                continue
+        with StreamingErrorWriter(self.error_csv_path) as error_writer:
+            for idx, fe in enumerate(entries, start=1):
+                rel_path = getattr(fe, '_rel_path', fe.path)
+                
+                # Type filter
+                if fe.entry_type and fe.entry_type not in self.allowed_types:
+                    logger.debug(
+                        'Skipping %s (type=%s, allowed=%s)',
+                        rel_path, fe.entry_type, self.allowed_types,
+                    )
+                    skipped += 1
+                    continue
 
-            # Validate against filesystem
-            errors = fe.validate(attrs=self.validate_attrs, check_fs=True)
+                # Validate against filesystem
+                errors = fe.validate(attrs=self.validate_attrs, check_fs=True)
 
-            if errors:
-                # Format error messages nicely
-                error_parts = []
-                for err in errors:
-                    error_parts.append(err)
-                print(f'FAIL: {rel_path}: {", ".join(error_parts)}')
-                failed += 1
-            else:
-                if not self.quiet:
-                    print(f'OK: {rel_path}')
-                passed += 1
-            
-            # Progress logging during validation
-            processed_count = passed + failed + skipped
-            if processed_count % progress_interval == 0:
-                pct = (processed_count / total) * 100
-                logger.info(
-                    'Validation progress: %d/%d (%.1f%%) — %d passed, %d failed, %d skipped',
-                    processed_count, total, pct, passed, failed, skipped
-                )
+                if errors:
+                    # Format error messages nicely
+                    error_msg = ', '.join(errors)
+                    logger.error('FAIL: %s: %s', rel_path, error_msg)
+                    error_writer.write((fe, error_msg))
+                    failed += 1
+                else:
+                    if not self.quiet:
+                        print(f'OK: {rel_path}')
+                    passed += 1
+                
+                # Progress logging during validation
+                processed_count = passed + failed + skipped
+                if processed_count % progress_interval == 0:
+                    pct = (processed_count / total) * 100
+                    logger.info(
+                        'Validation progress: %d/%d (%.1f%%) — %d passed, %d failed, %d skipped',
+                        processed_count, total, pct, passed, failed, skipped
+                    )
 
         validated_total = passed + failed
         print('---')
@@ -998,6 +1031,9 @@ class ValidateCopy(TackleFactory):
             'Validation complete: %d passed, %d failed, %d skipped',
             passed, failed, skipped
         )
+
+        if failed > 0:
+            logger.info('Errors written to: %s', self.error_csv_path)
 
         return 0 if failed == 0 else 1
 
@@ -1014,88 +1050,99 @@ class ValidateCopy(TackleFactory):
         
         logger.info('Applying attributes to %d entries...', total)
 
-        for idx, fe in enumerate(entries, start=1):
-            # Progress logging
-            processed_count = success + skipped + failed
-            if processed_count % progress_interval == 0:
-                pct = (processed_count / total) * 100
-                logger.info(
-                    'Apply progress: %d/%d (%.1f%%) — %d success, %d skipped, %d failed',
-                    processed_count, total, pct, success, skipped, failed
-                )
-            # Validate: path exists and has required source data
-            errors = fe.validate(source_attrs)
-            if errors:
-                for err in errors:
-                    logger.error('%s: %s', fe.path, err)
-                failed += 1
-                continue
-
-            # Type filter (entry_type is normalized during parsing)
-            if fe.entry_type not in self.allowed_types:
-                logger.debug(
-                    'Skipping %s (type=%s, allowed=%s)',
-                    fe.path, fe.entry_type, self.allowed_types,
-                )
-                skipped += 1
-                continue
-
-            # Extract dates for selection logic
-            dates = _extract_dates(fe)
-            fs = FileEntry.from_fs_path(fe.path)
-
-            # Apply user's selection and mutate FileEntry
-            attrs_to_apply: List[str] = []
-            skip_entry = False
-            for attr, selector in self.attr_map.items():
-                dt = resolve_selector(dates, selector)
-                
-                if dt is None:
-                    logger.warning(
-                        'No valid date for attr=%s selector=%s on %s, skipping entry',
-                        attr, selector, fe.path,
+        with StreamingErrorWriter(self.error_csv_path) as error_writer:
+            for idx, fe in enumerate(entries, start=1):
+                # Progress logging
+                processed_count = success + skipped + failed
+                if processed_count % progress_interval == 0:
+                    pct = (processed_count / total) * 100
+                    logger.info(
+                        'Apply progress: %d/%d (%.1f%%) — %d success, %d skipped, %d failed',
+                        processed_count, total, pct, success, skipped, failed
                     )
-                    skip_entry = True
-                    break
-                if not fs_attrs.timestamps_are_close(getattr(fs, attr), dt):                    
-                    setattr(fs, attr, dt)
-                    attrs_to_apply.append(attr)
+                # Validate: path exists and has required source data
+                errors = fe.validate(source_attrs)
+                if errors:
+                    error_msg = ', '.join(errors)
+                    logger.error('%s: %s', fe.path, error_msg)
+                    error_writer.write((fe, error_msg))
+                    failed += 1
+                    continue
 
-            if skip_entry or len(attrs_to_apply) == 0:
-                skipped += 1
-                continue
+                # Type filter (entry_type is normalized during parsing)
+                if fe.entry_type not in self.allowed_types:
+                    logger.debug(
+                        'Skipping %s (type=%s, allowed=%s)',
+                        fe.path, fe.entry_type, self.allowed_types,
+                    )
+                    skipped += 1
+                    continue
 
-            # Apply timestamps using FileEntry.apply_to_fs()
-            try:
-                intent = "Set"
-                if self.dry_run:
-                    intent = "[DRY-RUN] Would set"
-                else:
-                    fs.apply_to_fs(attrs=attrs_to_apply)
+                # Extract dates for selection logic
+                dates = _extract_dates(fe)
+                fs = FileEntry.from_fs_path(fe.path)
 
-                parts = ', '.join(
-                    f'{a}={getattr(fe, a).isoformat()}' for a in attrs_to_apply
-                )
-                logger.info('%s %s on %s', intent, parts, fe.path)
-                success += 1
+                # Apply user's selection and mutate FileEntry
+                attrs_to_apply: List[str] = []
+                skip_entry = False
+                for attr, selector in self.attr_map.items():
+                    dt = resolve_selector(dates, selector)
+                    
+                    if dt is None:
+                        logger.warning(
+                            'No valid date for attr=%s selector=%s on %s, skipping entry',
+                            attr, selector, fe.path,
+                        )
+                        skip_entry = True
+                        break
+                    if not fs_attrs.timestamps_are_close(getattr(fs, attr), dt):
+                        setattr(fs, attr, dt)
+                        attrs_to_apply.append(attr)
 
-            except NotImplementedError as exc:
-                logger.warning('%s — skipping %s', exc, fe.path)
-                skipped += 1
-            except OSError as exc:
-                logger.error('Failed for %s: %s', fe.path, exc)
-                failed += 1
-            except fs_attrs.FSNotPersistedError as exc:
-                logger.error('Failed for %s: %s', fe.path, exc)
-                failed += 1
-            except Exception as exc:
-                logger.error('Unexpected error for %s: %s', fe.path, exc)
-                failed += 1
+                if skip_entry or len(attrs_to_apply) == 0:
+                    skipped += 1
+                    continue
+
+                # Apply timestamps using FileEntry.apply_to_fs()
+                try:
+                    intent = "Set"
+                    if self.dry_run:
+                        intent = "[DRY-RUN] Would set"
+                    else:
+                        fs.apply_to_fs(attrs=attrs_to_apply)
+
+                    parts = ', '.join(
+                        f'{a}={getattr(fe, a).isoformat()}' for a in attrs_to_apply
+                    )
+                    logger.info('%s %s on %s', intent, parts, fe.path)
+                    success += 1
+
+                except NotImplementedError as exc:
+                    logger.warning('%s — skipping %s', exc, fe.path)
+                    skipped += 1
+                except OSError as exc:
+                    error_msg = f'Failed: {exc}'
+                    logger.error('%s: %s', fe.path, error_msg)
+                    error_writer.write((fe, error_msg))
+                    failed += 1
+                except fs_attrs.FSNotPersistedError as exc:
+                    error_msg = f'Failed: {exc}'
+                    logger.error('%s: %s', fe.path, error_msg)
+                    error_writer.write((fe, error_msg))
+                    failed += 1
+                except Exception as exc:
+                    error_msg = f'Unexpected error: {exc}'
+                    logger.error('%s: %s', fe.path, error_msg)
+                    error_writer.write((fe, error_msg))
+                    failed += 1
 
         logger.info(
             'Apply complete: %d success, %d skipped, %d failed',
             success, skipped, failed,
         )
+
+        if failed > 0:
+            logger.info('Errors written to: %s', self.error_csv_path)
 
     def _do_copy(self) -> int:
         """Copy files from listing to target directory.

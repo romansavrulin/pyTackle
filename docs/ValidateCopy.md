@@ -34,6 +34,7 @@ pyTackle ValidateCopy --validate listing.csv --attrs checksum,size /path/to/vali
 - `--attrs` specifies which attributes to compare (default: all available)
 - Use `-q` / `--quiet` to show only failures
 - Exit code: 0 = all entries match, 1 = validation failures
+- Failed entries are written to an error CSV file (e.g., `listing.csv` → `listing_error.csv`)
 
 ### Generate Mode (`--generate <listing>`)
 
@@ -45,6 +46,7 @@ pyTackle ValidateCopy --generate output.csv --attrs checksum /path/to/scan
 
 - `--attrs checksum` enables checksum calculation (off by default)
 - Use `--types fd` to include both files and directories
+- If filesystem errors occur during scanning, failed entries are written to an error CSV file (e.g., `output.csv` → `output_error.csv`)
 
 ### Apply Mode (`--apply <listing>`)
 
@@ -57,6 +59,7 @@ pyTackle ValidateCopy --apply listing.csv --attrs creation,modify /path/to/updat
 - `--attrs` specifies which attributes to set (creation, access, modify)
 - Use `--dry-run` to preview changes without modifying anything
 - Default: applies creation, access, and modify timestamps
+- If apply errors occur, failed entries are written to an error CSV file (e.g., `listing.csv` → `listing_error.csv`)
 
 ### Copy Mode (`--copy <listing>`)
 
@@ -75,7 +78,7 @@ pyTackle ValidateCopy --copy listing.csv --to /backup/destination /source/base
 
 **Options:**
 - `--to TARGET_DIR` — Target directory for copy operation (required with `--copy`)
-- `--types f,d,l` — Filter which entry types to copy (default: `d`)
+- `--types f,d,l` — Filter which entry types to copy (default: `d,f`)
 - `--dry-run` — Preview what would be copied without making changes
 - `--script-base-path PATH` — Strip a prefix from paths in the listing before resolving
 
@@ -118,7 +121,7 @@ pyTackle ValidateCopy --move listing.csv --to /backup/destination /source/base
 
 **Options:**
 - `--to TARGET_DIR` — Target directory for move operation (required with `--move`)
-- `--types f,d,l` — Filter which entry types to move (default: `d`)
+- `--types f,d,l` — Filter which entry types to move (default: `d,f`)
 - `--dry-run` — Preview what would be moved without making changes
 - `--script-base-path PATH` — Strip a prefix from paths in the listing before resolving
 
@@ -157,7 +160,7 @@ pyTackle ValidateCopy --delete listing.csv /base/directory
 - Does **not** recursively delete directory contents
 
 **Options:**
-- `--types f,d,l` — Filter which entry types to delete (default: `d`)
+- `--types f,d,l` — Filter which entry types to delete (default: `d,f`)
 - `--dry-run` — Preview what would be deleted without making changes
 - `--script-base-path PATH` — Strip a prefix from paths in the listing before resolving
 
@@ -209,7 +212,7 @@ pyTackle ValidateCopy --delete files.csv -v /base
 | Option | Description |
 |--------|-------------|
 | `--attrs ATTRS` | Comma-separated list of attributes. Meaning depends on mode (see below). |
-| `--types TYPES` | Comma-separated entry types to process: `f` (file), `d` (directory), `l` (symlink). Default: `d`. |
+| `--types TYPES` | Comma-separated entry types to process: `f` (file), `d` (directory), `l` (symlink). Default: `d,f`. |
 | `-v` | Verbose output (debug level logging). |
 
 ### Attribute Options by Mode
@@ -448,7 +451,7 @@ When `--attr-map` is empty (the default in apply mode), the canonical mapping is
 
 ## Error CSV Format
 
-When errors occur during `--copy`, `--move`, or `--delete` operations, failed entries are written to an error CSV file. The filename is derived from the source listing:
+When errors occur during any mode (`--validate`, `--generate`, `--apply`, `--copy`, `--move`, or `--delete`), failed entries are written to an error CSV file. The filename is derived from the source listing:
 
 | Source Filename | Error Filename |
 |-----------------|----------------|
