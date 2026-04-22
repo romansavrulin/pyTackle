@@ -85,7 +85,7 @@ _UNZIP_STDERR = r'(?i)(error|warning|bad crc)'
 
 # Common pedantic settings for ffprobe extensions
 _FFMPEG_PEDANTIC_BINARY = 'ffmpeg'
-_FFMPEG_PEDANTIC_ARGS = ('-hwaccel', 'auto', '-v', 'error', '-i')
+_FFMPEG_PEDANTIC_ARGS = ('-hwaccel', 'auto', '-xerror', '-v', 'error', '-i')
 
 # File extension to tool mapping
 TOOL_REGISTRY: Dict[str, ToolConfig] = {
