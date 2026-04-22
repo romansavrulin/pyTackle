@@ -19,6 +19,7 @@ import io
 import logging
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -433,6 +434,13 @@ class ValidateCopy(TackleFactory):
             help='Copy files from listing to target directory (requires --to)',
         )
         mode_group.add_argument(
+            '--move',
+            type=pathlib.Path,
+            default=None,
+            metavar='LISTING',
+            help='Move files from listing to target directory (requires --to)',
+        )
+        mode_group.add_argument(
             '--delete',
             type=pathlib.Path,
             default=None,
@@ -440,13 +448,13 @@ class ValidateCopy(TackleFactory):
             help='Delete files listed in the CSV from filesystem',
         )
 
-        # Copy mode target directory
+        # Copy/move mode target directory
         subparser.add_argument(
             '--to',
             type=pathlib.Path,
             default=None,
             metavar='TARGET_DIR',
-            help='Target directory for copy operation (required with --copy)',
+            help='Target directory for copy/move operation (required with --copy or --move)',
         )
 
         # Unified attribute specification
@@ -578,6 +586,8 @@ class ValidateCopy(TackleFactory):
             self._init_apply_mode(options)
         elif self.mode == 'copy':
             self._init_copy_mode(options)
+        elif self.mode == 'move':
+            self._init_move_mode(options)
         elif self.mode == 'delete':
             self._init_delete_mode(options)
 
@@ -586,7 +596,7 @@ class ValidateCopy(TackleFactory):
     def _determine_mode(self, options) -> str:
         """Determine the operation mode from CLI arguments.
         
-        Returns one of: 'validate', 'generate', 'apply', 'copy', 'delete'
+        Returns one of: 'validate', 'generate', 'apply', 'copy', 'move', 'delete'
         
         Mode is determined by the mutually exclusive group, so exactly one
         of the mode flags will be set.
@@ -599,11 +609,13 @@ class ValidateCopy(TackleFactory):
             return 'apply'
         if options.copy is not None:
             return 'copy'
+        if options.move is not None:
+            return 'move'
         if options.delete is not None:
             return 'delete'
         
         # This should never happen due to argparse's required=True
-        logger.error('One of --validate, --generate, --apply, --copy, or --delete is required')
+        logger.error('One of --validate, --generate, --apply, --copy, --move, or --delete is required')
         sys.exit(1)
 
     def _init_generate_mode(self, options) -> None:
@@ -732,6 +744,29 @@ class ValidateCopy(TackleFactory):
         # Generate error CSV path
         self.error_csv_path: Path = get_error_filename(self.listing_path)
 
+    def _init_move_mode(self, options) -> None:
+        """Initialize move mode settings."""
+        self.listing_path: str = str(options.move)
+        self.validate_attrs: List[str] = []
+        self.calculate_checksum: bool = False
+        self.generate_listing_path: Optional[str] = None
+        self.attr_map: Dict[str, str] = {}
+        
+        # Validate --to is provided
+        if options.to is None:
+            logger.error('--to TARGET_DIR is required with --move')
+            sys.exit(1)
+        
+        self.target_dir: str = str(options.to)
+        
+        # Validate listing file exists
+        if not os.path.isfile(self.listing_path):
+            logger.error('Listing file not found: %s', self.listing_path)
+            sys.exit(1)
+        
+        # Generate error CSV path
+        self.error_csv_path: Path = get_error_filename(self.listing_path)
+
     def _init_delete_mode(self, options) -> None:
         """Initialize delete mode settings."""
         self.listing_path: str = str(options.delete)
@@ -769,7 +804,7 @@ class ValidateCopy(TackleFactory):
         logger.info('=' * 60)
         logger.info('Base directory: %s', self.base_dir)
 
-        if mode_name in ('validate', 'apply', 'copy', 'delete'):
+        if mode_name in ('validate', 'apply', 'copy', 'move', 'delete'):
             logger.info('Listing file: %s', self.listing_path)
         else:
             logger.info('Output file: %s', self.generate_listing_path)
@@ -782,6 +817,9 @@ class ValidateCopy(TackleFactory):
         elif mode_name == 'apply':
             logger.info('Attribute map: %s', self.attr_map)
         elif mode_name == 'copy':
+            logger.info('Target directory: %s', self.target_dir)
+            logger.info('Error CSV: %s', self.error_csv_path)
+        elif mode_name == 'move':
             logger.info('Target directory: %s', self.target_dir)
             logger.info('Error CSV: %s', self.error_csv_path)
         elif mode_name == 'delete':
@@ -827,6 +865,10 @@ class ValidateCopy(TackleFactory):
         # Copy mode
         if self.mode == 'copy':
             return self._do_copy()
+
+        # Move mode
+        if self.mode == 'move':
+            return self._do_move()
 
         # Delete mode
         if self.mode == 'delete':
@@ -1143,6 +1185,97 @@ class ValidateCopy(TackleFactory):
         # Log summary
         logger.info(
             'Copy complete: %d success, %d failed, %d skipped',
+            success, failed, skipped
+        )
+        
+        if failed > 0:
+            logger.info('Errors written to: %s', self.error_csv_path)
+        
+        return 0 if failed == 0 else 1
+
+    def _do_move(self) -> int:
+        """Move files from listing to target directory.
+        
+        Uses shutil.move() which will try os.rename() first (atomic on same
+        filesystem), then falls back to copy+delete.
+        
+        Returns:
+            0 if all files moved successfully, 1 if any errors occurred.
+        """
+        progress_interval = 1000
+        
+        # Parse listing
+        entries = parse_listing(
+            self.listing_path,
+            self.base_dir,
+            self.script_base_path,
+        )
+        
+        total = len(entries)
+        success = 0
+        failed = 0
+        skipped = 0
+        
+        logger.info('Moving %d entries to %s...', total, self.target_dir)
+        
+        # Ensure target directory exists
+        os.makedirs(self.target_dir, exist_ok=True)
+        
+        with StreamingErrorWriter(self.error_csv_path) as error_writer:
+            for idx, fe in enumerate(entries, start=1):
+                # Progress logging
+                if idx % progress_interval == 0:
+                    pct = (idx / total) * 100
+                    logger.info(
+                        'Move progress: %d/%d (%.1f%%) — %d success, %d failed, %d skipped',
+                        idx, total, pct, success, failed, skipped
+                    )
+                
+                # Type filter
+                if fe.entry_type and fe.entry_type not in self.allowed_types:
+                    skipped += 1
+                    continue
+                
+                # Check source exists
+                if not os.path.exists(fe.path):
+                    error_msg = f'Source file not found: {fe.path}'
+                    logger.error(error_msg)
+                    error_writer.write((fe, error_msg))
+                    failed += 1
+                    continue
+                
+                # Calculate target path (preserve relative structure from base_dir)
+                rel_path = os.path.relpath(fe.path, self.base_dir)
+                target_path = os.path.join(self.target_dir, rel_path)
+                
+                # Create parent directories
+                target_parent = os.path.dirname(target_path)
+                if target_parent:
+                    os.makedirs(target_parent, exist_ok=True)
+                
+                # Execute move
+                if self.dry_run:
+                    logger.info('[DRY-RUN] Would move: %s -> %s', fe.path, target_path)
+                    success += 1
+                else:
+                    try:
+                        shutil.move(fe.path, target_path)
+                        logger.debug('Moved: %s -> %s', fe.path, target_path)
+                        success += 1
+                    except OSError as exc:
+                        error_msg = f'Move failed: {exc}'
+                        logger.error('%s: %s', fe.path, error_msg)
+                        error_writer.write((fe, error_msg))
+                        failed += 1
+                    except shutil.Error as exc:
+                        error_msg = f'Move failed: {exc}'
+                        logger.error('%s: %s', fe.path, error_msg)
+                        error_writer.write((fe, error_msg))
+                        failed += 1
+        
+        # Log summary
+        logger.info(
+            'Move complete: %d success, %d failed, %d skipped',
             success, failed, skipped
         )
         

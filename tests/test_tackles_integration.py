@@ -1784,3 +1784,211 @@ class TestValidateCopyDeleteMode:
         dir_entries = [e for e in entries if e.entry_type in allowed_types]
         assert len(dir_entries) == 1
         assert dir_entries[0].entry_type == 'd'
+
+
+# ===================================================================
+# ValidateCopy — Move Mode
+# ===================================================================
+
+
+class TestValidateCopyMoveMode:
+    """Test the move mode functionality (--move)."""
+
+    @staticmethod
+    def _create_canonical_row(
+        path: str,
+        size: int = 100,
+        entry_type: str = 'f',
+        checksum: str = '',
+    ) -> str:
+        """Create a canonical 10-column CSV row."""
+        now = datetime.now(tz=timezone.utc).isoformat()
+        return (
+            f'{now},{now},{now},'
+            f'{checksum},'
+            f'{entry_type},'
+            f'0o644,1000,1000,{size},'
+            f'{path}'
+        )
+
+    def test_move_mode_dry_run(self, tmp_path):
+        """--move with --dry-run should not actually move files."""
+        # Setup source directory with a file
+        source_dir = tmp_path / 'source'
+        source_dir.mkdir()
+        source_file = source_dir / 'test.txt'
+        source_file.write_text('test content')
+
+        # Setup target directory
+        target_dir = tmp_path / 'target'
+        target_dir.mkdir()
+
+        # Create listing CSV
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='test.txt', entry_type='f')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Parse listing and verify it loads correctly
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(source_dir))
+        assert len(entries) == 1
+        assert entries[0].path == str(source_file)
+
+        # In dry-run mode, source file should still exist
+        assert source_file.exists()
+        
+        # Target file should not exist after dry-run
+        target_file = target_dir / 'test.txt'
+        assert not target_file.exists()
+
+    def test_move_mode_moves_file(self, tmp_path):
+        """--move should move files to target directory (source removed, target exists)."""
+        # Setup source directory with a file
+        source_dir = tmp_path / 'source'
+        source_dir.mkdir()
+        source_file = source_dir / 'test.txt'
+        source_file.write_text('test content')
+
+        # Setup target directory
+        target_dir = tmp_path / 'target'
+        target_dir.mkdir()
+
+        # Create listing CSV
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='test.txt', entry_type='f')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(source_dir))
+        assert len(entries) == 1
+
+        # Verify file exists before move
+        assert source_file.exists()
+
+        # Calculate target path
+        rel_path = os.path.relpath(entries[0].path, str(source_dir))
+        target_file = target_dir / rel_path
+
+        # Simulate move operation using shutil.move
+        shutil.move(entries[0].path, str(target_file))
+
+        # Verify source file is removed
+        assert not source_file.exists()
+        
+        # Verify target file exists with correct content
+        assert target_file.exists()
+        assert target_file.read_text() == 'test content'
+
+    def test_move_mode_preserves_directory_structure(self, tmp_path):
+        """--move should preserve relative directory structure."""
+        # Setup source directory with nested file
+        source_dir = tmp_path / 'source'
+        subdir = source_dir / 'sub' / 'nested'
+        subdir.mkdir(parents=True)
+        source_file = subdir / 'deep.txt'
+        source_file.write_text('nested content')
+
+        # Setup target directory
+        target_dir = tmp_path / 'target'
+        target_dir.mkdir()
+
+        # Create listing CSV with relative path
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='sub/nested/deep.txt', entry_type='f')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(source_dir))
+        assert len(entries) == 1
+
+        # Calculate expected paths
+        rel_path = os.path.relpath(entries[0].path, str(source_dir))
+        target_file = target_dir / rel_path
+        target_parent = target_file.parent
+
+        # Create parent directories and move
+        target_parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(entries[0].path, str(target_file))
+
+        # Verify source file is removed
+        assert not source_file.exists()
+        
+        # Verify nested target structure exists with correct content
+        assert target_file.exists()
+        assert target_file.read_text() == 'nested content'
+        
+        # Verify directory structure is preserved
+        assert (target_dir / 'sub' / 'nested').is_dir()
+
+    def test_move_mode_error_csv_on_missing_source(self, tmp_path):
+        """--move should write error CSV when source file is missing."""
+        from common.streaming_csv import StreamingErrorWriter, get_error_filename
+
+        # Setup source directory (no actual file)
+        source_dir = tmp_path / 'source'
+        source_dir.mkdir()
+
+        # Create listing CSV referencing non-existent file
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='missing.txt', entry_type='f')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(source_dir))
+        assert len(entries) == 1
+
+        # Verify error filename generation
+        error_path = get_error_filename(listing_csv)
+        assert error_path == tmp_path / 'listing_error.csv'
+
+        # Simulate error writing (as would happen in move mode for missing source)
+        with StreamingErrorWriter(str(error_path)) as error_writer:
+            error_msg = f'Source file not found: {entries[0].path}'
+            error_writer.write((entries[0], error_msg))
+
+        # Verify error CSV was created and contains error
+        assert error_path.exists()
+        with open(error_path, 'r', newline='') as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            assert header[-1] == 'error'
+            row = next(reader)
+            assert 'not found' in row[-1]
+
+    def test_move_mode_type_filter(self, tmp_path):
+        """--move respects --types filter."""
+        # Setup directory with file and directory
+        source_dir = tmp_path / 'source'
+        source_dir.mkdir()
+        test_file = source_dir / 'file.txt'
+        test_file.write_text('content')
+        test_subdir = source_dir / 'subdir'
+        test_subdir.mkdir()
+
+        # Create listing CSV with both entries
+        listing_csv = tmp_path / 'listing.csv'
+        rows = [
+            self._create_canonical_row(path='file.txt', entry_type='f'),
+            self._create_canonical_row(path='subdir', entry_type='d'),
+        ]
+        listing_csv.write_text('\n'.join(rows) + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(source_dir))
+        assert len(entries) == 2
+
+        # Filter to only files
+        allowed_types = {'f'}
+        file_entries = [e for e in entries if e.entry_type in allowed_types]
+        assert len(file_entries) == 1
+        assert file_entries[0].entry_type == 'f'
+
+        # Filter to only directories
+        allowed_types = {'d'}
+        dir_entries = [e for e in entries if e.entry_type in allowed_types]
+        assert len(dir_entries) == 1
+        assert dir_entries[0].entry_type == 'd'

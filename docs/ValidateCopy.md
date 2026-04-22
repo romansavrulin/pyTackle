@@ -21,7 +21,7 @@ Verify file copy integrity and restore metadata not preserved during copy operat
 
 ## Operating Modes
 
-ValidateCopy has five mutually exclusive modes of operation. Each mode takes a listing file path as its argument.
+ValidateCopy has six mutually exclusive modes of operation. Each mode takes a listing file path as its argument.
 
 ### Validate Mode (`--validate <listing>`)
 
@@ -99,6 +99,49 @@ pyTackle ValidateCopy --copy files.csv --to /backup \
     --script-base-path "server/share" /local/base
 ```
 
+### Move Mode (`--move <listing>`)
+
+Moves files listed in a CSV to a target directory.
+
+```bash
+pyTackle ValidateCopy --move listing.csv --to /backup/destination /source/base
+```
+
+**Description:**
+- Reads file paths from the listing CSV
+- Moves each file to the target directory using `shutil.move()`
+- Uses atomic `os.rename()` when source and destination are on the same filesystem
+- Falls back to copy+delete for cross-filesystem moves
+- Source file is removed after successful move
+- Creates parent directories in the target as needed
+- Maintains the relative directory structure from the base directory
+
+**Options:**
+- `--to TARGET_DIR` — Target directory for move operation (required with `--move`)
+- `--types f,d,l` — Filter which entry types to move (default: `d`)
+- `--dry-run` — Preview what would be moved without making changes
+- `--script-base-path PATH` — Strip a prefix from paths in the listing before resolving
+
+**Error handling:**
+- If a source file cannot be found or moved, the error is logged to console
+- Failed entries are written to an error CSV file (e.g., `listing.csv` → `listing_error.csv`)
+- Processing continues with remaining files after an error
+- Exit code: 0 = all files moved successfully, 1 = one or more errors occurred
+
+**Examples:**
+
+```bash
+# Move all files from listing to backup directory
+pyTackle ValidateCopy --move files.csv --to /backup/destination /source/base
+
+# Move only files (no directories) with dry-run preview
+pyTackle ValidateCopy --move files.csv --to /backup --types f --dry-run /source
+
+# Move with path prefix stripping
+pyTackle ValidateCopy --move files.csv --to /backup \
+    --script-base-path "server/share" /local/base
+```
+
 ### Delete Mode (`--delete <listing>`)
 
 Deletes files listed in a CSV from the filesystem.
@@ -152,6 +195,7 @@ pyTackle ValidateCopy --delete files.csv -v /base
 | `--generate PATH` | Generate a listing from the filesystem and write to the specified path. |
 | `--apply PATH` | Apply metadata from the specified listing to the filesystem. |
 | `--copy PATH` | Copy files from listing to target directory (requires `--to`). |
+| `--move PATH` | Move files from listing to target directory (requires `--to`). |
 | `--delete PATH` | Delete files listed in the CSV from filesystem. |
 
 ### Positional Arguments
@@ -198,15 +242,15 @@ The `--attrs` option behaves differently depending on the active mode:
 | `--script-base-path PATH` | Leading directory prefix to strip from paths in the listing before resolving. |
 | `--dry-run` | Preview changes without modifying timestamps. |
 
-### Copy Mode Options
+### Copy/Move Mode Options
 
 | Option | Description |
 |--------|-------------|
-| `--to TARGET_DIR` | Target directory for copy operation. Required when using `--copy`. |
+| `--to TARGET_DIR` | Target directory for copy or move operation. Required when using `--copy` or `--move`. |
 
-### Options Available in Copy/Delete Modes
+### Options Available in Copy/Move/Delete Modes
 
-The following options work with both `--copy` and `--delete` modes:
+The following options work with `--copy`, `--move`, and `--delete` modes:
 
 | Option | Description |
 |--------|-------------|
@@ -400,11 +444,11 @@ When `--attr-map` is empty (the default in apply mode), the canonical mapping is
 | Code | Meaning |
 |------|---------|
 | 0 | Success (or validation passed with all entries matching) |
-| 1 | Validation failed, or copy/delete had errors |
+| 1 | Validation failed, or copy/move/delete had errors |
 
 ## Error CSV Format
 
-When errors occur during `--copy` or `--delete` operations, failed entries are written to an error CSV file. The filename is derived from the source listing:
+When errors occur during `--copy`, `--move`, or `--delete` operations, failed entries are written to an error CSV file. The filename is derived from the source listing:
 
 | Source Filename | Error Filename |
 |-----------------|----------------|
