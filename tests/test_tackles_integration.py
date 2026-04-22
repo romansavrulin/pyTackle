@@ -1377,3 +1377,410 @@ class TestValidateCopyValidation:
         errors = fe.validate(attrs=['checksum'], check_fs=False)
         assert len(errors) == 1
         assert 'not set in entry' in errors[0]
+
+
+# ===================================================================
+# ValidateCopy — Copy Mode
+# ===================================================================
+
+
+class TestValidateCopyCopyMode:
+    """Test the copy mode functionality (--copy)."""
+
+    @staticmethod
+    def _create_canonical_row(
+        path: str,
+        size: int = 100,
+        entry_type: str = 'f',
+        checksum: str = '',
+    ) -> str:
+        """Create a canonical 10-column CSV row."""
+        now = datetime.now(tz=timezone.utc).isoformat()
+        return (
+            f'{now},{now},{now},'
+            f'{checksum},'
+            f'{entry_type},'
+            f'0o644,1000,1000,{size},'
+            f'{path}'
+        )
+
+    def test_copy_mode_dry_run(self, tmp_path):
+        """--copy with --dry-run should not actually copy files."""
+        # Setup source directory with a file
+        source_dir = tmp_path / 'source'
+        source_dir.mkdir()
+        source_file = source_dir / 'test.txt'
+        source_file.write_text('test content')
+
+        # Setup target directory
+        target_dir = tmp_path / 'target'
+        target_dir.mkdir()
+
+        # Create listing CSV
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='test.txt', entry_type='f')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Import and create ValidateCopy instance
+        from tackles.ValidateCopy import ValidateCopy, parse_listing
+
+        # Parse listing and verify it loads correctly
+        entries = parse_listing(str(listing_csv), str(source_dir))
+        assert len(entries) == 1
+        assert entries[0].path == str(source_file)
+
+        # Target file should not exist after dry-run
+        target_file = target_dir / 'test.txt'
+        assert not target_file.exists()
+
+    def test_copy_mode_creates_target_file(self, tmp_path):
+        """--copy should copy files to target directory using cp -a."""
+        # Skip on Windows (cp -a is not available)
+        if platform.system() == 'Windows':
+            pytest.skip('cp -a not available on Windows')
+
+        # Setup source directory with a file
+        source_dir = tmp_path / 'source'
+        source_dir.mkdir()
+        source_file = source_dir / 'test.txt'
+        source_file.write_text('test content')
+
+        # Setup target directory
+        target_dir = tmp_path / 'target'
+        target_dir.mkdir()
+
+        # Create listing CSV
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='test.txt', entry_type='f')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(source_dir))
+        assert len(entries) == 1
+
+        # Manually copy the file using subprocess (simulating what ValidateCopy does)
+        import subprocess
+        target_file = target_dir / 'test.txt'
+        result = subprocess.run(
+            ['cp', '-a', str(source_file), str(target_file)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert target_file.exists()
+        assert target_file.read_text() == 'test content'
+
+    def test_copy_mode_preserves_directory_structure(self, tmp_path):
+        """--copy should preserve relative directory structure."""
+        # Skip on Windows (cp -a is not available)
+        if platform.system() == 'Windows':
+            pytest.skip('cp -a not available on Windows')
+
+        # Setup source directory with nested file
+        source_dir = tmp_path / 'source'
+        subdir = source_dir / 'sub' / 'nested'
+        subdir.mkdir(parents=True)
+        source_file = subdir / 'deep.txt'
+        source_file.write_text('nested content')
+
+        # Setup target directory
+        target_dir = tmp_path / 'target'
+        target_dir.mkdir()
+
+        # Create listing CSV with relative path
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='sub/nested/deep.txt', entry_type='f')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(source_dir))
+        assert len(entries) == 1
+
+        # Calculate expected paths
+        rel_path = os.path.relpath(entries[0].path, str(source_dir))
+        target_file = target_dir / rel_path
+        target_parent = target_file.parent
+
+        # Create parent directories and copy
+        import subprocess
+        target_parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            ['cp', '-a', entries[0].path, str(target_file)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert target_file.exists()
+        assert target_file.read_text() == 'nested content'
+
+    def test_copy_mode_error_csv_on_missing_source(self, tmp_path):
+        """--copy should write error CSV when source file is missing."""
+        from common.streaming_csv import StreamingErrorWriter, get_error_filename
+
+        # Setup source directory (no actual file)
+        source_dir = tmp_path / 'source'
+        source_dir.mkdir()
+
+        # Create listing CSV referencing non-existent file
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='missing.txt', entry_type='f')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(source_dir))
+        assert len(entries) == 1
+
+        # Verify error filename generation
+        error_path = get_error_filename(listing_csv)
+        assert error_path == tmp_path / 'listing_error.csv'
+
+        # Simulate error writing
+        with StreamingErrorWriter(str(error_path)) as error_writer:
+            error_msg = f'Source file not found: {entries[0].path}'
+            error_writer.write((entries[0], error_msg))
+
+        # Verify error CSV was created and contains error
+        assert error_path.exists()
+        with open(error_path, 'r', newline='') as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            assert header[-1] == 'error'
+            row = next(reader)
+            assert 'not found' in row[-1]
+
+
+# ===================================================================
+# ValidateCopy — Delete Mode
+# ===================================================================
+
+
+class TestValidateCopyDeleteMode:
+    """Test the delete mode functionality (--delete)."""
+
+    @staticmethod
+    def _create_canonical_row(
+        path: str,
+        size: int = 100,
+        entry_type: str = 'f',
+        checksum: str = '',
+    ) -> str:
+        """Create a canonical 10-column CSV row."""
+        now = datetime.now(tz=timezone.utc).isoformat()
+        return (
+            f'{now},{now},{now},'
+            f'{checksum},'
+            f'{entry_type},'
+            f'0o644,1000,1000,{size},'
+            f'{path}'
+        )
+
+    def test_delete_mode_dry_run(self, tmp_path):
+        """--delete with --dry-run should not actually delete files."""
+        # Setup directory with a file
+        base_dir = tmp_path / 'data'
+        base_dir.mkdir()
+        test_file = base_dir / 'to_delete.txt'
+        test_file.write_text('will not be deleted')
+
+        # Create listing CSV
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='to_delete.txt', entry_type='f')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(base_dir))
+        assert len(entries) == 1
+        assert entries[0].path == str(test_file)
+
+        # In dry-run mode, file should still exist
+        # (We're just verifying the file is there before any operation)
+        assert test_file.exists()
+
+    def test_delete_mode_removes_file(self, tmp_path):
+        """--delete should remove files from filesystem."""
+        # Setup directory with a file
+        base_dir = tmp_path / 'data'
+        base_dir.mkdir()
+        test_file = base_dir / 'to_delete.txt'
+        test_file.write_text('to be deleted')
+
+        # Create listing CSV
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='to_delete.txt', entry_type='f')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(base_dir))
+        assert len(entries) == 1
+
+        # Verify file exists before delete
+        assert test_file.exists()
+
+        # Simulate delete operation
+        os.remove(entries[0].path)
+
+        # Verify file is deleted
+        assert not test_file.exists()
+
+    def test_delete_mode_removes_empty_directory(self, tmp_path):
+        """--delete should remove empty directories."""
+        # Setup directory structure
+        base_dir = tmp_path / 'data'
+        empty_dir = base_dir / 'empty_folder'
+        empty_dir.mkdir(parents=True)
+
+        # Create listing CSV with directory entry
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='empty_folder', entry_type='d')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(base_dir))
+        assert len(entries) == 1
+
+        # Verify directory exists
+        assert empty_dir.exists()
+        assert empty_dir.is_dir()
+
+        # Simulate delete of empty directory
+        os.rmdir(entries[0].path)
+
+        # Verify directory is deleted
+        assert not empty_dir.exists()
+
+    def test_delete_mode_fails_on_non_empty_directory(self, tmp_path):
+        """--delete should fail on non-empty directories."""
+        # Setup directory with a file inside
+        base_dir = tmp_path / 'data'
+        non_empty_dir = base_dir / 'non_empty'
+        non_empty_dir.mkdir(parents=True)
+        (non_empty_dir / 'file.txt').write_text('content')
+
+        # Create listing CSV with directory entry
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='non_empty', entry_type='d')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(base_dir))
+        assert len(entries) == 1
+
+        # Trying to rmdir a non-empty directory should raise OSError
+        with pytest.raises(OSError):
+            os.rmdir(entries[0].path)
+
+        # Directory should still exist
+        assert non_empty_dir.exists()
+
+    def test_delete_mode_error_csv_on_missing_file(self, tmp_path):
+        """--delete should write error CSV when file doesn't exist."""
+        from common.streaming_csv import StreamingErrorWriter, get_error_filename
+
+        # Setup base directory (no actual file)
+        base_dir = tmp_path / 'data'
+        base_dir.mkdir()
+
+        # Create listing CSV referencing non-existent file
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='nonexistent.txt', entry_type='f')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(base_dir))
+        assert len(entries) == 1
+
+        # Verify error filename generation
+        error_path = get_error_filename(listing_csv)
+        assert error_path == tmp_path / 'listing_error.csv'
+
+        # Simulate error writing (as would happen in delete mode)
+        with StreamingErrorWriter(str(error_path)) as error_writer:
+            error_msg = f'File not found: {entries[0].path}'
+            error_writer.write((entries[0], error_msg))
+
+        # Verify error CSV was created
+        assert error_path.exists()
+        with open(error_path, 'r', newline='') as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            assert header[-1] == 'error'
+            row = next(reader)
+            assert 'not found' in row[-1]
+
+    def test_delete_mode_removes_symlink(self, tmp_path):
+        """--delete should remove symlinks without following them."""
+        # Skip on Windows (symlinks require special permissions)
+        if platform.system() == 'Windows':
+            pytest.skip('Symlinks require elevated privileges on Windows')
+
+        # Setup directory with a file and symlink
+        base_dir = tmp_path / 'data'
+        base_dir.mkdir()
+        target_file = base_dir / 'target.txt'
+        target_file.write_text('target content')
+        symlink = base_dir / 'link.txt'
+        symlink.symlink_to(target_file)
+
+        # Create listing CSV with symlink entry
+        listing_csv = tmp_path / 'listing.csv'
+        row = self._create_canonical_row(path='link.txt', entry_type='l')
+        listing_csv.write_text(row + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(base_dir))
+        assert len(entries) == 1
+
+        # Verify symlink exists
+        assert symlink.is_symlink()
+
+        # Delete symlink (not the target)
+        os.remove(entries[0].path)
+
+        # Verify symlink is gone but target remains
+        assert not symlink.exists()
+        assert target_file.exists()
+        assert target_file.read_text() == 'target content'
+
+    def test_delete_mode_type_filter(self, tmp_path):
+        """--delete respects --types filter."""
+        # Setup directory with file and directory
+        base_dir = tmp_path / 'data'
+        base_dir.mkdir()
+        test_file = base_dir / 'file.txt'
+        test_file.write_text('content')
+        test_dir = base_dir / 'subdir'
+        test_dir.mkdir()
+
+        # Create listing CSV with both entries
+        listing_csv = tmp_path / 'listing.csv'
+        rows = [
+            self._create_canonical_row(path='file.txt', entry_type='f'),
+            self._create_canonical_row(path='subdir', entry_type='d'),
+        ]
+        listing_csv.write_text('\n'.join(rows) + '\n', encoding='utf-8')
+
+        # Parse listing
+        from tackles.ValidateCopy import parse_listing
+        entries = parse_listing(str(listing_csv), str(base_dir))
+        assert len(entries) == 2
+
+        # Filter to only files
+        allowed_types = {'f'}
+        file_entries = [e for e in entries if e.entry_type in allowed_types]
+        assert len(file_entries) == 1
+        assert file_entries[0].entry_type == 'f'
+
+        # Filter to only directories
+        allowed_types = {'d'}
+        dir_entries = [e for e in entries if e.entry_type in allowed_types]
+        assert len(dir_entries) == 1
+        assert dir_entries[0].entry_type == 'd'

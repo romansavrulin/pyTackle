@@ -9,6 +9,8 @@ Verify file copy integrity and restore metadata not preserved during copy operat
 - **Generate listings** — Create a CSV manifest of files with timestamps, checksums, permissions, and ownership
 - **Validate copies** — Compare files against a listing to verify integrity (checksums, sizes, timestamps)
 - **Apply/fix metadata** — Restore timestamps and permissions that weren't preserved during copy
+- **Copy files** — Copy files from a listing to a target directory, preserving all attributes
+- **Delete files** — Delete files listed in a CSV from the filesystem
 
 ### Typical Workflow
 
@@ -19,7 +21,7 @@ Verify file copy integrity and restore metadata not preserved during copy operat
 
 ## Operating Modes
 
-ValidateCopy has three mutually exclusive modes of operation. Each mode takes a listing file path as its argument.
+ValidateCopy has five mutually exclusive modes of operation. Each mode takes a listing file path as its argument.
 
 ### Validate Mode (`--validate <listing>`)
 
@@ -56,6 +58,90 @@ pyTackle ValidateCopy --apply listing.csv --attrs creation,modify /path/to/updat
 - Use `--dry-run` to preview changes without modifying anything
 - Default: applies creation, access, and modify timestamps
 
+### Copy Mode (`--copy <listing>`)
+
+Copies files listed in a CSV to a target directory, preserving all file attributes using `cp -a`.
+
+```bash
+pyTackle ValidateCopy --copy listing.csv --to /backup/destination /source/base
+```
+
+**Description:**
+- Reads file paths from the listing CSV
+- Copies each file to the target directory using `cp -a` (archive mode)
+- Preserves all file attributes: timestamps, permissions, ownership, extended attributes
+- Creates parent directories in the target as needed
+- Maintains the relative directory structure from the base directory
+
+**Options:**
+- `--to TARGET_DIR` — Target directory for copy operation (required with `--copy`)
+- `--types f,d,l` — Filter which entry types to copy (default: `d`)
+- `--dry-run` — Preview what would be copied without making changes
+- `--script-base-path PATH` — Strip a prefix from paths in the listing before resolving
+
+**Error handling:**
+- If a source file cannot be found or copied, the error is logged to console
+- Failed entries are written to an error CSV file (e.g., `listing.csv` → `listing_error.csv`)
+- Processing continues with remaining files after an error
+- Exit code: 0 = all files copied successfully, 1 = one or more errors occurred
+
+**Examples:**
+
+```bash
+# Copy all files from listing to backup directory
+pyTackle ValidateCopy --copy files.csv --to /backup/destination /source/base
+
+# Copy only files (no directories) with dry-run preview
+pyTackle ValidateCopy --copy files.csv --to /backup --types f --dry-run /source
+
+# Copy with path prefix stripping
+pyTackle ValidateCopy --copy files.csv --to /backup \
+    --script-base-path "server/share" /local/base
+```
+
+### Delete Mode (`--delete <listing>`)
+
+Deletes files listed in a CSV from the filesystem.
+
+```bash
+pyTackle ValidateCopy --delete listing.csv /base/directory
+```
+
+**Description:**
+- Reads file paths from the listing CSV
+- Deletes files and symlinks using `os.remove()`
+- Deletes directories using `os.rmdir()` (only works on empty directories)
+- Does **not** recursively delete directory contents
+
+**Options:**
+- `--types f,d,l` — Filter which entry types to delete (default: `d`)
+- `--dry-run` — Preview what would be deleted without making changes
+- `--script-base-path PATH` — Strip a prefix from paths in the listing before resolving
+
+**Error handling:**
+- If a file cannot be found or deleted, the error is logged to console
+- Failed entries are written to an error CSV file (e.g., `listing.csv` → `listing_error.csv`)
+- Processing continues with remaining files after an error
+- Exit code: 0 = all files deleted successfully, 1 = one or more errors occurred
+
+**Important notes:**
+- Directories must be empty to be deleted (use `--types f,l` first to delete contents)
+- This operation is **destructive** — always use `--dry-run` first to verify
+- Broken symlinks are handled correctly (deleted even if target doesn't exist)
+
+**Examples:**
+
+```bash
+# Delete all files from listing
+pyTackle ValidateCopy --delete files.csv /base/directory
+
+# Delete only files (skip directories) with dry-run preview
+pyTackle ValidateCopy --delete files.csv --types f --dry-run /base
+
+# Delete with verbose output to see each operation
+pyTackle ValidateCopy --delete files.csv -v /base
+```
+
 ## CLI Reference
 
 ### Mode Selection (mutually exclusive, one required)
@@ -65,6 +151,8 @@ pyTackle ValidateCopy --apply listing.csv --attrs creation,modify /path/to/updat
 | `--validate PATH` | Validate filesystem against the specified listing file. |
 | `--generate PATH` | Generate a listing from the filesystem and write to the specified path. |
 | `--apply PATH` | Apply metadata from the specified listing to the filesystem. |
+| `--copy PATH` | Copy files from listing to target directory (requires `--to`). |
+| `--delete PATH` | Delete files listed in the CSV from filesystem. |
 
 ### Positional Arguments
 
@@ -109,6 +197,23 @@ The `--attrs` option behaves differently depending on the active mode:
 | `--attr-map MAP` | Advanced: Comma-separated mapping of filesystem attributes to listing column selectors. Format: `attr:selector[,attr:selector,…]`. See [Attribute Mapping](#attribute-mapping). |
 | `--script-base-path PATH` | Leading directory prefix to strip from paths in the listing before resolving. |
 | `--dry-run` | Preview changes without modifying timestamps. |
+
+### Copy Mode Options
+
+| Option | Description |
+|--------|-------------|
+| `--to TARGET_DIR` | Target directory for copy operation. Required when using `--copy`. |
+
+### Options Available in Copy/Delete Modes
+
+The following options work with both `--copy` and `--delete` modes:
+
+| Option | Description |
+|--------|-------------|
+| `--types TYPES` | Filter entry types to process: `f` (file), `d` (directory), `l` (symlink). |
+| `--dry-run` | Preview operations without making changes. |
+| `--script-base-path PATH` | Strip a prefix from paths before resolving. |
+| `-v` | Verbose output showing each operation. |
 
 ## Typical Workflows with Examples
 
@@ -295,7 +400,45 @@ When `--attr-map` is empty (the default in apply mode), the canonical mapping is
 | Code | Meaning |
 |------|---------|
 | 0 | Success (or validation passed with all entries matching) |
-| 1 | Validation failed (one or more entries don't match) |
+| 1 | Validation failed, or copy/delete had errors |
+
+## Error CSV Format
+
+When errors occur during `--copy` or `--delete` operations, failed entries are written to an error CSV file. The filename is derived from the source listing:
+
+| Source Filename | Error Filename |
+|-----------------|----------------|
+| `files.csv` | `files_error.csv` |
+| `listing.csv` | `listing_error.csv` |
+| `data/files.csv` | `data/files_error.csv` |
+
+### Error CSV Columns
+
+The error CSV uses the same format as the input listing, with an additional `error` column appended:
+
+| Column | Index | Description |
+|--------|-------|-------------|
+| creation | 0 | Creation timestamp from source listing |
+| access | 1 | Access timestamp from source listing |
+| modify | 2 | Modification timestamp from source listing |
+| checksum | 3 | Checksum from source listing |
+| entry_type | 4 | Entry type from source listing |
+| permissions | 5 | Permissions from source listing |
+| uid | 6 | UID from source listing |
+| gid | 7 | GID from source listing |
+| size | 8 | Size from source listing |
+| path | 9 | Path from source listing |
+| error | 10 | Error message describing the failure |
+
+### Example Error CSV
+
+```csv
+creation,access,modify,checksum,entry_type,permissions,uid,gid,size,path,error
+2024-01-15T10:30:00,2024-03-20T14:22:33,2024-01-15T10:30:00,md5:abc123,f,0644,501,20,1234,photos/missing.jpg,Source file not found: /base/photos/missing.jpg
+2024-01-16T08:00:00,2024-03-21T09:00:00,2024-01-16T08:00:00,md5:def456,f,0644,501,20,5678,docs/readonly.pdf,"Delete failed: [Errno 13] Permission denied: '/base/docs/readonly.pdf'"
+```
+
+The error CSV is only created if errors occur (lazy initialization). If all operations succeed, no error file is generated.
 
 ## Platform Support
 

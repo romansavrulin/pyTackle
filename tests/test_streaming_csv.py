@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import List
 
 import pytest
 
-from common.streaming_csv import StreamingCsvWriter
+from common.FileEntry import FileEntry
+from common.attr_map import CANONICAL_MAP
+from common.streaming_csv import (
+    StreamingCsvWriter,
+    StreamingErrorWriter,
+    get_error_filename,
+)
 
 
 # ===========================================================================
@@ -451,3 +459,214 @@ class TestIsOpen:
         writer.close()
         
         assert writer.is_open is False
+
+
+# ===========================================================================
+# 10. get_error_filename Tests
+# ===========================================================================
+
+
+class TestGetErrorFilename:
+    """Tests for get_error_filename() function."""
+
+    def test_simple_csv_filename(self):
+        """Simple CSV filename should get _error suffix before extension."""
+        result = get_error_filename('files.csv')
+        assert result == Path('files_error.csv')
+
+    def test_path_with_directory(self):
+        """Path with directory should preserve directory."""
+        result = get_error_filename('path/to/files.csv')
+        assert result == Path('path/to/files_error.csv')
+
+    def test_path_object_input(self):
+        """Path object input should work."""
+        result = get_error_filename(Path('data/listing.csv'))
+        assert result == Path('data/listing_error.csv')
+
+    def test_different_extension(self):
+        """Non-csv extension should still work."""
+        result = get_error_filename('backup.txt')
+        assert result == Path('backup_error.txt')
+
+    def test_no_extension(self):
+        """File without extension should get _error suffix."""
+        result = get_error_filename('myfile')
+        assert result == Path('myfile_error')
+
+    def test_multiple_dots_in_filename(self):
+        """Multiple dots should only affect last extension."""
+        result = get_error_filename('data.backup.2024.csv')
+        assert result == Path('data.backup.2024_error.csv')
+
+    def test_hidden_file(self):
+        """Hidden file (starts with dot) should work."""
+        result = get_error_filename('.hidden.csv')
+        assert result == Path('.hidden_error.csv')
+
+    def test_nested_directory_path(self):
+        """Deeply nested path should preserve all directories."""
+        result = get_error_filename('a/b/c/d/files.csv')
+        assert result == Path('a/b/c/d/files_error.csv')
+
+
+# ===========================================================================
+# 11. StreamingErrorWriter Tests
+# ===========================================================================
+
+
+class TestStreamingErrorWriter:
+    """Tests for StreamingErrorWriter class."""
+
+    @pytest.fixture
+    def sample_file_entry(self):
+        """Create a sample FileEntry for testing."""
+        return FileEntry(
+            path='/tmp/test/file.txt',
+            size=1024,
+            creation=datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
+            access=datetime(2024, 1, 16, 12, 0, 0, tzinfo=timezone.utc),
+            modify=datetime(2024, 1, 15, 11, 45, 0, tzinfo=timezone.utc),
+            permissions='0o644',
+            uid=1000,
+            gid=1000,
+            checksum='md5:d41d8cd98f00b204e9800998ecf8427e',
+            entry_type='f',
+        )
+
+    def test_creates_file_with_correct_header(self, tmp_path, sample_file_entry):
+        """StreamingErrorWriter should create CSV with FileEntry columns + error."""
+        path = tmp_path / 'errors.csv'
+        
+        with StreamingErrorWriter(str(path)) as writer:
+            writer.write((sample_file_entry, 'Test error message'))
+        
+        # Read and verify header
+        with open(path, 'r', newline='') as f:
+            reader = csv.reader(f)
+            header = next(reader)
+        
+        # Header should have 10 FileEntry columns + 'error' column
+        assert len(header) == 11
+        assert header[-1] == 'error'
+        # Verify canonical column order
+        assert header[0] == 'creation'
+        assert header[1] == 'access'
+        assert header[2] == 'modify'
+        assert header[9] == 'path'
+
+    def test_writes_file_entry_with_error(self, tmp_path, sample_file_entry):
+        """StreamingErrorWriter should write FileEntry data + error message."""
+        path = tmp_path / 'errors.csv'
+        error_msg = 'File not found: source missing'
+        
+        with StreamingErrorWriter(str(path)) as writer:
+            writer.write((sample_file_entry, error_msg))
+        
+        # Read and verify data row
+        with open(path, 'r', newline='') as f:
+            reader = csv.reader(f)
+            header = next(reader)  # skip header
+            row = next(reader)
+        
+        # Verify error message in last column
+        assert row[-1] == error_msg
+        # Verify path in correct column (column 9)
+        assert row[9] == '/tmp/test/file.txt'
+        # Verify entry_type (column 4)
+        assert row[4] == 'f'
+
+    def test_writes_multiple_errors(self, tmp_path):
+        """StreamingErrorWriter should handle multiple error entries."""
+        path = tmp_path / 'errors.csv'
+        
+        entries = [
+            (FileEntry(path=f'/tmp/file{i}.txt', entry_type='f'), f'Error {i}')
+            for i in range(5)
+        ]
+        
+        with StreamingErrorWriter(str(path)) as writer:
+            for entry, error in entries:
+                writer.write((entry, error))
+        
+        # Verify count
+        assert writer.count == 5
+        
+        # Read and verify all rows
+        with open(path, 'r', newline='') as f:
+            reader = csv.reader(f)
+            next(reader)  # skip header
+            rows = list(reader)
+        
+        assert len(rows) == 5
+        for i, row in enumerate(rows):
+            assert row[-1] == f'Error {i}'
+            assert row[9] == f'/tmp/file{i}.txt'
+
+    def test_lazy_open_no_file_without_errors(self, tmp_path):
+        """StreamingErrorWriter should not create file if no errors written."""
+        path = tmp_path / 'errors.csv'
+        
+        with StreamingErrorWriter(str(path)) as writer:
+            pass  # No writes
+        
+        # File should not exist
+        assert not path.exists()
+
+    def test_flush_on_write_default(self, tmp_path, sample_file_entry):
+        """StreamingErrorWriter should flush after each write by default."""
+        path = tmp_path / 'errors.csv'
+        
+        writer = StreamingErrorWriter(str(path))
+        writer.write((sample_file_entry, 'Error 1'))
+        
+        # File should be readable before close due to flush
+        with open(path, 'r') as f:
+            content = f.read()
+        
+        assert 'Error 1' in content
+        writer.close()
+
+    def test_handles_error_message_with_special_chars(self, tmp_path, sample_file_entry):
+        """StreamingErrorWriter should properly escape special characters."""
+        path = tmp_path / 'errors.csv'
+        
+        # Error message with commas, quotes, and newlines
+        error_msg = 'Failed: "Permission denied", check\nthe permissions'
+        
+        with StreamingErrorWriter(str(path)) as writer:
+            writer.write((sample_file_entry, error_msg))
+        
+        # Read back and verify escaping worked
+        with open(path, 'r', newline='') as f:
+            reader = csv.reader(f)
+            next(reader)  # skip header
+            row = next(reader)
+        
+        assert row[-1] == error_msg
+
+    def test_uses_canonical_attr_map_by_default(self, tmp_path, sample_file_entry):
+        """StreamingErrorWriter should use CANONICAL_MAP by default."""
+        path = tmp_path / 'errors.csv'
+        
+        with StreamingErrorWriter(str(path)) as writer:
+            writer.write((sample_file_entry, 'Test error'))
+        
+        with open(path, 'r', newline='') as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            row = next(reader)
+        
+        # Verify column positions match CANONICAL_MAP
+        assert row[int(CANONICAL_MAP['path'])] == sample_file_entry.path
+        assert row[int(CANONICAL_MAP['entry_type'])] == sample_file_entry.entry_type
+        assert row[int(CANONICAL_MAP['size'])] == str(sample_file_entry.size)
+
+    def test_path_object_accepted(self, tmp_path, sample_file_entry):
+        """StreamingErrorWriter should accept Path objects."""
+        path = tmp_path / 'errors.csv'
+        
+        with StreamingErrorWriter(path) as writer:
+            writer.write((sample_file_entry, 'Error'))
+        
+        assert path.exists()

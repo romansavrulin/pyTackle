@@ -19,8 +19,10 @@ import io
 import logging
 import os
 import pathlib
+import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from common import fs_attrs
@@ -35,7 +37,11 @@ from common.fs_attrs import (
     set_creation_time,                               # noqa: F401 — re-exported
     set_access_modify_time,                          # noqa: F401 — re-exported
 )
-from common.streaming_csv import StreamingListingWriter
+from common.streaming_csv import (
+    get_error_filename,
+    StreamingErrorWriter,
+    StreamingListingWriter,
+)
 from tackles.TackleFactory import TackleFactory
 
 logging.basicConfig(
@@ -419,6 +425,29 @@ class ValidateCopy(TackleFactory):
             metavar='LISTING',
             help='Apply metadata from listing to filesystem',
         )
+        mode_group.add_argument(
+            '--copy',
+            type=pathlib.Path,
+            default=None,
+            metavar='LISTING',
+            help='Copy files from listing to target directory (requires --to)',
+        )
+        mode_group.add_argument(
+            '--delete',
+            type=pathlib.Path,
+            default=None,
+            metavar='LISTING',
+            help='Delete files listed in the CSV from filesystem',
+        )
+
+        # Copy mode target directory
+        subparser.add_argument(
+            '--to',
+            type=pathlib.Path,
+            default=None,
+            metavar='TARGET_DIR',
+            help='Target directory for copy operation (required with --copy)',
+        )
 
         # Unified attribute specification
         subparser.add_argument(
@@ -547,16 +576,20 @@ class ValidateCopy(TackleFactory):
             self._init_validate_mode(options)
         elif self.mode == 'apply':
             self._init_apply_mode(options)
+        elif self.mode == 'copy':
+            self._init_copy_mode(options)
+        elif self.mode == 'delete':
+            self._init_delete_mode(options)
 
         self._log_startup_settings()
 
     def _determine_mode(self, options) -> str:
         """Determine the operation mode from CLI arguments.
         
-        Returns one of: 'validate', 'generate', 'apply'
+        Returns one of: 'validate', 'generate', 'apply', 'copy', 'delete'
         
         Mode is determined by the mutually exclusive group, so exactly one
-        of --validate, --generate, or --apply will be set.
+        of the mode flags will be set.
         """
         if options.validate is not None:
             return 'validate'
@@ -564,9 +597,13 @@ class ValidateCopy(TackleFactory):
             return 'generate'
         if options.apply is not None:
             return 'apply'
+        if options.copy is not None:
+            return 'copy'
+        if options.delete is not None:
+            return 'delete'
         
         # This should never happen due to argparse's required=True
-        logger.error('One of --validate, --generate, or --apply is required')
+        logger.error('One of --validate, --generate, --apply, --copy, or --delete is required')
         sys.exit(1)
 
     def _init_generate_mode(self, options) -> None:
@@ -672,6 +709,46 @@ class ValidateCopy(TackleFactory):
         if not self.attr_map:
             self.attr_map = get_canonical_timestamp_map()
 
+    def _init_copy_mode(self, options) -> None:
+        """Initialize copy mode settings."""
+        self.listing_path: str = str(options.copy)
+        self.validate_attrs: List[str] = []
+        self.calculate_checksum: bool = False
+        self.generate_listing_path: Optional[str] = None
+        self.attr_map: Dict[str, str] = {}
+        
+        # Validate --to is provided
+        if options.to is None:
+            logger.error('--to TARGET_DIR is required with --copy')
+            sys.exit(1)
+        
+        self.target_dir: str = str(options.to)
+        
+        # Validate listing file exists
+        if not os.path.isfile(self.listing_path):
+            logger.error('Listing file not found: %s', self.listing_path)
+            sys.exit(1)
+        
+        # Generate error CSV path
+        self.error_csv_path: Path = get_error_filename(self.listing_path)
+
+    def _init_delete_mode(self, options) -> None:
+        """Initialize delete mode settings."""
+        self.listing_path: str = str(options.delete)
+        self.validate_attrs: List[str] = []
+        self.calculate_checksum: bool = False
+        self.generate_listing_path: Optional[str] = None
+        self.target_dir: Optional[str] = None
+        self.attr_map: Dict[str, str] = {}
+        
+        # Validate listing file exists
+        if not os.path.isfile(self.listing_path):
+            logger.error('Listing file not found: %s', self.listing_path)
+            sys.exit(1)
+        
+        # Generate error CSV path
+        self.error_csv_path: Path = get_error_filename(self.listing_path)
+
     # Backward compatibility properties
     @property
     def validate_mode(self) -> bool:
@@ -692,7 +769,7 @@ class ValidateCopy(TackleFactory):
         logger.info('=' * 60)
         logger.info('Base directory: %s', self.base_dir)
 
-        if mode_name in ('validate', 'apply'):
+        if mode_name in ('validate', 'apply', 'copy', 'delete'):
             logger.info('Listing file: %s', self.listing_path)
         else:
             logger.info('Output file: %s', self.generate_listing_path)
@@ -704,6 +781,11 @@ class ValidateCopy(TackleFactory):
             logger.info('Quiet mode: %s', 'enabled' if self.quiet else 'disabled')
         elif mode_name == 'apply':
             logger.info('Attribute map: %s', self.attr_map)
+        elif mode_name == 'copy':
+            logger.info('Target directory: %s', self.target_dir)
+            logger.info('Error CSV: %s', self.error_csv_path)
+        elif mode_name == 'delete':
+            logger.info('Error CSV: %s', self.error_csv_path)
 
         if mode_name == 'generate':
             logger.info('Calculate checksum: %s', 'enabled' if self.calculate_checksum else 'disabled')
@@ -724,11 +806,11 @@ class ValidateCopy(TackleFactory):
 
     def do(self) -> int:
         # Validate mode
-        if self.validate_mode:
+        if self.mode == 'validate':
             return self._do_validate()
 
         # Generate-listing mode
-        if self.generate_listing_path is not None:
+        if self.mode == 'generate':
             count = generate_listing(
                 self.base_dir,
                 self.generate_listing_path,
@@ -741,6 +823,14 @@ class ValidateCopy(TackleFactory):
                 count, self.generate_listing_path,
             )
             return 0
+
+        # Copy mode
+        if self.mode == 'copy':
+            return self._do_copy()
+
+        # Delete mode
+        if self.mode == 'delete':
+            return self._do_delete()
 
         # Apply mode — parse listing with path resolution
         entries = parse_listing(
@@ -964,3 +1054,176 @@ class ValidateCopy(TackleFactory):
             'Apply complete: %d success, %d skipped, %d failed',
             success, skipped, failed,
         )
+
+    def _do_copy(self) -> int:
+        """Copy files from listing to target directory.
+        
+        Uses system `cp -a` to preserve all file attributes including
+        timestamps, permissions, and ownership.
+        
+        Returns:
+            0 if all files copied successfully, 1 if any errors occurred.
+        """
+        progress_interval = 1000
+        
+        # Parse listing
+        entries = parse_listing(
+            self.listing_path,
+            self.base_dir,
+            self.script_base_path,
+        )
+        
+        total = len(entries)
+        success = 0
+        failed = 0
+        skipped = 0
+        
+        logger.info('Copying %d entries to %s...', total, self.target_dir)
+        
+        # Ensure target directory exists
+        os.makedirs(self.target_dir, exist_ok=True)
+        
+        with StreamingErrorWriter(self.error_csv_path) as error_writer:
+            for idx, fe in enumerate(entries, start=1):
+                # Progress logging
+                if idx % progress_interval == 0:
+                    pct = (idx / total) * 100
+                    logger.info(
+                        'Copy progress: %d/%d (%.1f%%) — %d success, %d failed, %d skipped',
+                        idx, total, pct, success, failed, skipped
+                    )
+                
+                # Type filter
+                if fe.entry_type and fe.entry_type not in self.allowed_types:
+                    skipped += 1
+                    continue
+                
+                # Check source exists
+                if not os.path.exists(fe.path):
+                    error_msg = f'Source file not found: {fe.path}'
+                    logger.error(error_msg)
+                    error_writer.write((fe, error_msg))
+                    failed += 1
+                    continue
+                
+                # Calculate target path (preserve relative structure from base_dir)
+                rel_path = os.path.relpath(fe.path, self.base_dir)
+                target_path = os.path.join(self.target_dir, rel_path)
+                
+                # Create parent directories
+                target_parent = os.path.dirname(target_path)
+                if target_parent:
+                    os.makedirs(target_parent, exist_ok=True)
+                
+                # Execute copy
+                if self.dry_run:
+                    logger.info('[DRY-RUN] Would copy: %s -> %s', fe.path, target_path)
+                    success += 1
+                else:
+                    try:
+                        result = subprocess.run(
+                            ['cp', '-a', fe.path, target_path],
+                            capture_output=True,
+                            text=True,
+                        )
+                        if result.returncode != 0:
+                            error_msg = f'cp failed: {result.stderr.strip()}'
+                            logger.error('%s: %s', fe.path, error_msg)
+                            error_writer.write((fe, error_msg))
+                            failed += 1
+                        else:
+                            logger.debug('Copied: %s -> %s', fe.path, target_path)
+                            success += 1
+                    except OSError as exc:
+                        error_msg = f'Copy failed: {exc}'
+                        logger.error('%s: %s', fe.path, error_msg)
+                        error_writer.write((fe, error_msg))
+                        failed += 1
+        
+        # Log summary
+        logger.info(
+            'Copy complete: %d success, %d failed, %d skipped',
+            success, failed, skipped
+        )
+        
+        if failed > 0:
+            logger.info('Errors written to: %s', self.error_csv_path)
+        
+        return 0 if failed == 0 else 1
+
+    def _do_delete(self) -> int:
+        """Delete files from listing.
+        
+        Deletes files and symlinks using os.remove(), and empty directories
+        using os.rmdir(). Non-empty directories will fail with an error.
+        
+        Returns:
+            0 if all files deleted successfully, 1 if any errors occurred.
+        """
+        progress_interval = 1000
+        
+        # Parse listing
+        entries = parse_listing(
+            self.listing_path,
+            self.base_dir,
+            self.script_base_path,
+        )
+        
+        total = len(entries)
+        success = 0
+        failed = 0
+        skipped = 0
+        
+        logger.info('Deleting %d entries...', total)
+        
+        with StreamingErrorWriter(self.error_csv_path) as error_writer:
+            for idx, fe in enumerate(entries, start=1):
+                # Progress logging
+                if idx % progress_interval == 0:
+                    pct = (idx / total) * 100
+                    logger.info(
+                        'Delete progress: %d/%d (%.1f%%) — %d success, %d failed, %d skipped',
+                        idx, total, pct, success, failed, skipped
+                    )
+                
+                # Type filter
+                if fe.entry_type and fe.entry_type not in self.allowed_types:
+                    skipped += 1
+                    continue
+                
+                # Check file exists
+                if not os.path.exists(fe.path) and not os.path.islink(fe.path):
+                    error_msg = f'File not found: {fe.path}'
+                    logger.error(error_msg)
+                    error_writer.write((fe, error_msg))
+                    failed += 1
+                    continue
+                
+                # Execute delete
+                if self.dry_run:
+                    logger.info('[DRY-RUN] Would delete: %s', fe.path)
+                    success += 1
+                else:
+                    try:
+                        if os.path.isdir(fe.path) and not os.path.islink(fe.path):
+                            os.rmdir(fe.path)  # Only removes empty directories
+                        else:
+                            os.remove(fe.path)
+                        logger.debug('Deleted: %s', fe.path)
+                        success += 1
+                    except OSError as exc:
+                        error_msg = f'Delete failed: {exc}'
+                        logger.error('%s: %s', fe.path, error_msg)
+                        error_writer.write((fe, error_msg))
+                        failed += 1
+        
+        # Log summary
+        logger.info(
+            'Delete complete: %d success, %d failed, %d skipped',
+            success, failed, skipped
+        )
+        
+        if failed > 0:
+            logger.info('Errors written to: %s', self.error_csv_path)
+        
+        return 0 if failed == 0 else 1

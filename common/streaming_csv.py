@@ -12,11 +12,38 @@ Subclasses only need to implement `_to_row()` to convert items to CSV rows.
 from __future__ import annotations
 
 import csv
+import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Dict, Generic, List, Optional, Tuple, TypeVar, TextIO
 
 from common.FileEntry import FileEntry
 from common.attr_map import CANONICAL_MAP
+
+
+def get_error_filename(source_path: Path | str) -> Path:
+    """Generate error CSV filename from source filename.
+    
+    Inserts '_error' before the file extension.
+    
+    Args:
+        source_path: Path to the source file.
+    
+    Returns:
+        Path object with '_error' suffix.
+    
+    Examples:
+        >>> get_error_filename('files.csv')
+        PosixPath('files_error.csv')
+        >>> get_error_filename(Path('data/listing.csv'))
+        PosixPath('data/listing_error.csv')
+        >>> get_error_filename('backup.txt')
+        PosixPath('backup_error.txt')
+    """
+    path = Path(source_path) if isinstance(source_path, str) else source_path
+    stem = path.stem
+    suffix = path.suffix
+    return path.parent / f"{stem}_error{suffix}"
 
 # Generic type for items written to the CSV
 T = TypeVar('T')
@@ -216,3 +243,78 @@ class StreamingListingWriter(StreamingCsvWriter[FileEntry]):
     def _to_row(self, entry: FileEntry) -> List[str]:
         """Convert a FileEntry to a list of CSV column values."""
         return entry.to_listing_row(self.attr_map)
+
+
+class StreamingErrorWriter(StreamingCsvWriter[Tuple[FileEntry, str]]):
+    """Streaming CSV writer for error logging with FileEntry + error message.
+    
+    Writes FileEntry data plus an error message column for tracking failed
+    operations during copy/delete modes. Uses lazy open mode — file is only
+    created if errors actually occur.
+    
+    The output format matches the canonical listing format with an additional
+    'error' column at the end.
+    """
+    
+    def __init__(
+        self,
+        path: str | Path,
+        attr_map: Optional[Dict[str, str]] = None,
+        flush_on_write: bool = True,
+    ):
+        """Initialize the streaming error writer.
+        
+        Args:
+            path: Path to the output error CSV file.
+            attr_map: Column mapping for FileEntry serialization.
+                Defaults to CANONICAL_MAP.
+            flush_on_write: If True, flush after each write. Defaults to True
+                for durability in error logging.
+        """
+        self.attr_map = attr_map or CANONICAL_MAP
+        
+        # Generate header with error column
+        header = self._generate_header_with_error(self.attr_map)
+        
+        super().__init__(
+            str(path),
+            header=header,
+            lazy_open=True,  # Only create file if errors occur
+            flush_on_write=flush_on_write,
+        )
+    
+    @staticmethod
+    def _generate_header_with_error(attr_map: Dict[str, str]) -> Tuple[str, ...]:
+        """Generate a header tuple from attr_map keys plus 'error' column.
+        
+        Args:
+            attr_map: Column mapping (attribute name → column index).
+        
+        Returns:
+            Tuple of attribute names in column order, with 'error' at the end.
+        """
+        # Find max column index to determine row width
+        max_col = max(int(idx) for idx in attr_map.values())
+        header_list = [''] * (max_col + 1)
+        
+        for attr, col_idx in attr_map.items():
+            header_list[int(col_idx)] = attr
+        
+        # Add error column at the end
+        header_list.append('error')
+        
+        return tuple(header_list)
+    
+    def _to_row(self, item: Tuple[FileEntry, str]) -> List[str]:
+        """Convert a (FileEntry, error_message) tuple to CSV columns.
+        
+        Args:
+            item: A tuple of (FileEntry, error_message).
+        
+        Returns:
+            List of string values for CSV output.
+        """
+        entry, error_msg = item
+        row = entry.to_listing_row(self.attr_map)
+        row.append(error_msg)
+        return row
