@@ -37,7 +37,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from common.attr_map import (
     CANONICAL_MAP,
@@ -417,6 +417,7 @@ class FileEntry:
         self,
         algorithm: str = 'md5',
         utility: str | None = None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> str:
         """Return the hexdigest, using a cached value if available.
 
@@ -424,6 +425,13 @@ class FileEntry:
         *algorithm*, the cached hexdigest is returned without recalculation.
         Otherwise the checksum is computed, stored as
         ``"<algorithm>:<hexdigest>"``, and the hexdigest returned.
+
+        Args:
+            algorithm: Hash algorithm name (e.g. 'md5', 'sha256'). Default 'md5'.
+            utility: Optional external utility name (e.g. 'md5sum'). If provided,
+                progress_callback is ignored.
+            progress_callback: Optional callback for progress reporting during
+                hashlib-based calculation. Signature: (bytes_read, total_bytes, file_path).
         """
         prefix = algorithm + ':'
         if self.checksum is not None and self.checksum.startswith(prefix):
@@ -434,26 +442,37 @@ class FileEntry:
             )
             return hexdigest
 
-        return self._compute_and_store(algorithm, utility)
+        return self._compute_and_store(algorithm, utility, progress_callback)
 
     def recalculate_checksum(
         self,
         algorithm: str = 'md5',
         utility: str | None = None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> str:
         """Always recalculate the checksum, ignoring any cached value.
 
         Stores the result and returns the hexdigest.
+
+        Args:
+            algorithm: Hash algorithm name (e.g. 'md5', 'sha256'). Default 'md5'.
+            utility: Optional external utility name (e.g. 'md5sum'). If provided,
+                progress_callback is ignored.
+            progress_callback: Optional callback for progress reporting during
+                hashlib-based calculation. Signature: (bytes_read, total_bytes, file_path).
         """
-        return self._compute_and_store(algorithm, utility)
+        return self._compute_and_store(algorithm, utility, progress_callback)
 
     def _compute_and_store(
         self,
         algorithm: str,
         utility: str | None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> str:
         """Compute checksum, store it, and return the hexdigest."""
-        hexdigest = checksum.calculate(self.path, algorithm, utility)
+        hexdigest = checksum.calculate(
+            self.path, algorithm, utility, progress_callback=progress_callback
+        )
         self.checksum = f'{algorithm}:{hexdigest}'
         logger.debug(
             "Computed %s checksum for %s: %s",

@@ -19,6 +19,30 @@ Verify file copy integrity and restore metadata not preserved during copy operat
    (source)                 (any method)          (destination)        (if needed)
 ```
 
+## Progress Reporting
+
+ValidateCopy provides time-based progress updates during all operations:
+
+- **Default interval:** Progress messages are logged every 10 seconds
+- **Consistent updates:** Progress is reported based on elapsed time, not entry count, ensuring regular feedback regardless of file sizes
+- **Large file progress:** Files ≥100MB show intermediate checksum progress during hashing
+- **Streaming output:** In generate mode, entries are written to the output file as they are processed
+
+### Progress Message Examples
+
+**Standard progress (all modes):**
+```
+2024-01-15 10:30:45 - INFO - Listing progress: 5000 entries written | 3500 checksums calculated | 125.3 entries/sec
+2024-01-15 10:30:55 - INFO - Validation: 1500/3000 (50.0%) | Success: 1498 | Failed: 2 | 45.2 files/sec
+```
+
+**Large file checksum progress (files ≥100MB):**
+```
+2024-01-15 10:30:55 - INFO -   Hashing: 50.0% (512/1024 MB) - large_video.mp4
+```
+
+This intermediate progress ensures users see feedback during long checksum calculations on large files, rather than the operation appearing frozen.
+
 ## Operating Modes
 
 ValidateCopy has six mutually exclusive modes of operation. Each mode takes a listing file path as its argument.
@@ -38,7 +62,7 @@ pyTackle ValidateCopy --validate listing.csv --attrs checksum,size /path/to/vali
 
 ### Generate Mode (`--generate <listing>`)
 
-Generates a listing file from the filesystem.
+Generates a listing file from the filesystem using true streaming output.
 
 ```bash
 pyTackle ValidateCopy --generate output.csv --attrs checksum /path/to/scan
@@ -47,6 +71,12 @@ pyTackle ValidateCopy --generate output.csv --attrs checksum /path/to/scan
 - `--attrs checksum` enables checksum calculation (off by default)
 - Use `--types fd` to include both files and directories
 - If filesystem errors occur during scanning, failed entries are written to an error CSV file (e.g., `output.csv` → `output_error.csv`)
+
+**Streaming behavior:**
+- Entries are written to the output CSV as they are processed (not buffered in memory)
+- Memory usage remains constant regardless of directory size
+- Partial results are available if the operation is interrupted
+- Progress is logged every 10 seconds showing entries written and processing rate
 
 ### Apply Mode (`--apply <listing>`)
 

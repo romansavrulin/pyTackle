@@ -22,9 +22,10 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from common import fs_attrs
 from common.attr_map import (
@@ -56,6 +57,12 @@ logger = logging.getLogger(__name__)
 
 FORMAT_CANONICAL = 'canonical'  # 10 columns — full pyTackle format
 FORMAT_LINUX = 'linux'          # 6 columns — Linux stat output
+
+# Time-based progress interval (seconds)
+PROGRESS_INTERVAL = 10
+
+# Minimum file size for checksum progress (100MB)
+MIN_SIZE_FOR_CHECKSUM_PROGRESS = 100 * 1024 * 1024
 
 # Format-specific attribute maps for FileEntry.from_listing_row()
 # Linux stat output: creation, access, modify, ctime (ignored), entry_type, path
@@ -156,14 +163,14 @@ def parse_listing(
     listing_path: str,
     base_dir: str,
     script_base_path: Optional[str] = None,
-    progress_interval: int = 1000,
+    progress_interval: float = PROGRESS_INTERVAL,
 ) -> List[FileEntry]:
     """Read and parse a listing file, resolving paths against *base_dir*.
 
     Each FileEntry's ``path`` attribute is set to the fully-resolved filesystem
     path.  Entries with non-existent paths are logged and skipped.
     
-    Progress is logged every *progress_interval* entries.
+    Progress is logged every *progress_interval* seconds.
     """
     entries: List[FileEntry] = []
 
@@ -190,6 +197,8 @@ def parse_listing(
 
         reader = csv.reader(fh)
         processed = 0
+        last_progress = time.monotonic()
+        
         for lineno, cols in enumerate(reader, start=1):
             if not cols or all(c.strip() == '' for c in cols):
                 continue
@@ -204,13 +213,15 @@ def parse_listing(
                 entries.append(fe)
                 processed += 1
                 
-                # Progress logging
-                if processed % progress_interval == 0:
+                # Time-based progress logging
+                now = time.monotonic()
+                if now - last_progress >= progress_interval:
                     pct = (processed / total_lines) * 100
                     logger.info(
                         'Loading entries: %d/%d (%.1f%%)',
                         processed, total_lines, pct
                     )
+                    last_progress = now
             except Exception as exc:
                 logger.warning('Line %d: skipping — %s', lineno, exc)
 
@@ -274,6 +285,42 @@ def resolve_selector(
 # Listing generation
 # ---------------------------------------------------------------------------
 
+def _create_checksum_progress_callback(
+    file_path: str,
+    file_size: Optional[int],
+) -> Optional[Callable[[int, int, str], None]]:
+    """Create a progress callback for large file checksum operations.
+    
+    Only returns a callback for files >= MIN_SIZE_FOR_CHECKSUM_PROGRESS (100MB).
+    This avoids log spam for small files.
+    
+    Args:
+        file_path: Path to the file being hashed.
+        file_size: Size of the file in bytes.
+    
+    Returns:
+        A callback function, or None if the file is too small.
+    """
+    if file_size is None or file_size < MIN_SIZE_FOR_CHECKSUM_PROGRESS:
+        return None
+    
+    last_log = [time.monotonic()]  # Use list for closure mutation
+    
+    def callback(bytes_read: int, total_bytes: int, path: str) -> None:
+        now = time.monotonic()
+        if now - last_log[0] >= PROGRESS_INTERVAL:
+            pct = (bytes_read / total_bytes * 100) if total_bytes > 0 else 0
+            mb_read = bytes_read / (1024 * 1024)
+            mb_total = total_bytes / (1024 * 1024)
+            logger.info(
+                'Hashing: %.1f%% (%.0f/%.0f MB) - %s',
+                pct, mb_read, mb_total, os.path.basename(file_path),
+            )
+            last_log[0] = now
+    
+    return callback
+
+
 def generate_listing(
     base_dir: str,
     output_path: str,
@@ -281,11 +328,12 @@ def generate_listing(
     calculate_checksum: bool = False,
     checksum_algorithm: str = 'md5',
     error_csv_path: Optional[Path] = None,
+    progress_interval: float = PROGRESS_INTERVAL,
 ) -> int:
     """Walk *base_dir* and write a canonical 10-column CSV listing to *output_path*.
 
     Uses :meth:`FileEntry.from_fs_path` to read filesystem attributes and
-    :func:`common.listing.write_listing` to serialise the canonical format.
+    writes entries as they are processed — true streaming output.
 
     If *calculate_checksum* is True, checksums are computed for files
     (entry_type='f') using the specified *checksum_algorithm*.
@@ -293,117 +341,113 @@ def generate_listing(
     If *error_csv_path* is provided, errors encountered during stat or checksum
     operations are written to the error CSV file.
 
+    Progress is logged every *progress_interval* seconds.
+
     Returns the number of entries written.
     """
     base = os.path.normpath(base_dir)
     error_count = 0
+    checksum_count = 0
 
     # Use provided error_csv_path or generate one from output_path
     if error_csv_path is None:
         error_csv_path = get_error_filename(output_path)
 
-    with StreamingErrorWriter(error_csv_path) as error_writer:
-        def _collect_entries() -> List[FileEntry]:
-            """Yield :class:`FileEntry` objects for every matching path."""
-            nonlocal error_count
+    # Time-based progress tracking
+    start_time = time.monotonic()
+    last_progress = start_time
+    processed = 0
 
-            progress_interval = 1000
-            processed = 0
+    logger.info('Starting listing generation from: %s', base)
 
-            entries = []
+    # Open both writers at the start — true streaming
+    with (
+        StreamingErrorWriter(error_csv_path) as error_writer,
+        StreamingListingWriter(output_path) as writer,
+    ):
+        for dirpath, dirnames, filenames in os.walk(base):
+            # Collect all full paths in this directory level
+            paths: List[str] = []
+            if 'd' in allowed_types:
+                paths.extend(
+                    os.path.join(dirpath, d) for d in dirnames
+                )
+            if 'f' in allowed_types:
+                paths.extend(
+                    os.path.join(dirpath, f) for f in filenames
+                    if not os.path.islink(os.path.join(dirpath, f))
+                )
+            if 'l' in allowed_types:
+                # Symlinks among files
+                paths.extend(
+                    os.path.join(dirpath, f) for f in filenames
+                    if os.path.islink(os.path.join(dirpath, f))
+                )
+                # Symlinks among dirs
+                paths.extend(
+                    os.path.join(dirpath, d) for d in dirnames
+                    if os.path.islink(os.path.join(dirpath, d))
+                )
 
-            for dirpath, dirnames, filenames in os.walk(base):
-                # Collect all full paths in this directory level
-                paths: List[str] = []
-                if 'd' in allowed_types:
-                    paths.extend(
-                        os.path.join(dirpath, d) for d in dirnames
-                    )
-                if 'f' in allowed_types:
-                    paths.extend(
-                        os.path.join(dirpath, f) for f in filenames
-                        if not os.path.islink(os.path.join(dirpath, f))
-                    )
-                if 'l' in allowed_types:
-                    # Symlinks among files
-                    paths.extend(
-                        os.path.join(dirpath, f) for f in filenames
-                        if os.path.islink(os.path.join(dirpath, f))
-                    )
-                    # Symlinks among dirs
-                    paths.extend(
-                        os.path.join(dirpath, d) for d in dirnames
-                        if os.path.islink(os.path.join(dirpath, d))
-                    )
+            # Also include the directory itself if it's the base
+            if dirpath == base and 'd' in allowed_types:
+                paths.insert(0, dirpath)
 
-                # Also include the directory itself if it's the base
-                if dirpath == base and 'd' in allowed_types:
-                    paths.insert(0, dirpath)
+            for full_path in paths:
+                # Read filesystem attributes
+                try:
+                    fe = FileEntry.from_fs_path(full_path)
+                except OSError as exc:
+                    error_msg = f'Cannot stat: {exc}'
+                    logger.error('%s: %s', full_path, error_msg)
+                    # Create a minimal FileEntry for error reporting
+                    error_fe = FileEntry(path=full_path)
+                    error_writer.write((error_fe, error_msg))
+                    error_count += 1
+                    continue
 
-                for full_path in paths:
+                # Calculate checksum for files (with progress for large files)
+                if calculate_checksum and fe.entry_type == 'f':
                     try:
-                        fe = FileEntry.from_fs_path(full_path)
-                    except OSError as exc:
-                        error_msg = f'Cannot stat: {exc}'
-                        logger.error('%s: %s', full_path, error_msg)
-                        # Create a minimal FileEntry for error reporting
-                        error_fe = FileEntry(path=full_path)
-                        error_writer.write((error_fe, error_msg))
-                        error_count += 1
-                        continue
-                    
-                    processed += 1
-                        
-                    # Progress logging during loading
-                    if processed % progress_interval == 0:
-                        logger.info(
-                            'Collecting entries from FS: %d',
-                            processed
+                        # Create progress callback for large files
+                        progress_cb = _create_checksum_progress_callback(
+                            full_path, fe.size
                         )
-                    entries.append(fe)
-                    #yield fe
-            return entries
-
-        logger.info("Collecting fs...")
-        entries = _collect_entries()
-        # Calculate checksum for files if requested (before changing path!)
-        logger.info(f"Collected {len(entries)} entries")
-
-        if calculate_checksum:
-            logger.info(f"Calculating checksums...")
-            total_lines = len(entries)
-            progress_interval = total_lines / 1000
-            if progress_interval < 1:
-                progress_interval = 1
-            if progress_interval > 100:
-                progress_interval = 100
-            processed = 0
-            for entry in entries:
-                processed += 1
-                if entry.entry_type == 'f':
-                    # Progress logging during loading
-                    if processed % progress_interval == 0:
-                        pct = (processed / total_lines) * 100
-                        logger.info(
-                            'Calculating checksums: %d/%d (%.1f%%)',
-                            processed, total_lines, pct
+                        fe.calculate_checksum(
+                            algorithm=checksum_algorithm,
+                            progress_callback=progress_cb,
                         )
-                    try:
-                        entry.calculate_checksum(algorithm=checksum_algorithm)
+                        checksum_count += 1
                     except OSError as exc:
                         error_msg = f'Cannot calculate checksum: {exc}'
-                        logger.error('%s: %s', entry.path, error_msg)
-                        error_writer.write((entry, error_msg))
+                        logger.error('%s: %s', full_path, error_msg)
+                        error_writer.write((fe, error_msg))
                         error_count += 1
+                        continue
 
-    # Convert all paths to relative (after checksum calculation which needs full paths)
-    for entry in entries:
-        entry.path = os.path.relpath(entry.path, base)
+                # Convert to relative path and write immediately
+                fe.path = os.path.relpath(full_path, base)
+                writer.write(fe)
+                processed += 1
 
-    # Write using streaming writer
-    with StreamingListingWriter(output_path) as writer:
-        for entry in entries:
-            writer.write(entry)
+                # Time-based progress logging
+                now = time.monotonic()
+                if now - last_progress >= progress_interval:
+                    elapsed = now - start_time
+                    rate = processed / elapsed if elapsed > 0 else 0
+                    logger.info(
+                        'Listing progress: %d entries written | '
+                        '%d checksums calculated | %.1f entries/sec',
+                        processed, checksum_count, rate,
+                    )
+                    last_progress = now
+
+    # Final summary
+    elapsed = time.monotonic() - start_time
+    logger.info(
+        'Listing complete: %d entries, %d errors (%.1fs)',
+        writer.count, error_count, elapsed,
+    )
 
     if error_count > 0:
         logger.info('Errors written to: %s', error_csv_path)
@@ -923,8 +967,6 @@ class ValidateCopy(TackleFactory):
         Returns:
             0 if all entries passed validation, 1 if any failed.
         """
-        progress_interval = 1000
-        
         # First pass: count total lines for progress reporting
         with open(self.listing_path, encoding='utf-8-sig') as fh:
             total_lines = sum(1 for line in fh if line.strip())
@@ -952,6 +994,8 @@ class ValidateCopy(TackleFactory):
 
             reader = csv.reader(fh)
             processed = 0
+            last_progress = time.monotonic()
+            
             for lineno, cols in enumerate(reader, start=1):
                 if not cols or all(c.strip() == '' for c in cols):
                     continue
@@ -968,13 +1012,15 @@ class ValidateCopy(TackleFactory):
                     entries.append(fe)
                     processed += 1
                     
-                    # Progress logging during loading
-                    if processed % progress_interval == 0:
+                    # Time-based progress logging
+                    now = time.monotonic()
+                    if now - last_progress >= PROGRESS_INTERVAL:
                         pct = (processed / total_lines) * 100
                         logger.info(
                             'Loading entries: %d/%d (%.1f%%)',
                             processed, total_lines, pct
                         )
+                        last_progress = now
                 except Exception as exc:
                     logger.warning('Line %d: skipping — %s', lineno, exc)
 
@@ -986,6 +1032,7 @@ class ValidateCopy(TackleFactory):
         total = len(entries)
         
         logger.info('Validating %d entries...', total)
+        last_progress = time.monotonic()
 
         with StreamingErrorWriter(self.error_csv_path) as error_writer:
             for idx, fe in enumerate(entries, start=1):
@@ -1014,14 +1061,16 @@ class ValidateCopy(TackleFactory):
                         print(f'OK: {rel_path}')
                     passed += 1
                 
-                # Progress logging during validation
-                processed_count = passed + failed + skipped
-                if processed_count % progress_interval == 0:
+                # Time-based progress logging
+                now = time.monotonic()
+                if now - last_progress >= PROGRESS_INTERVAL:
+                    processed_count = passed + failed + skipped
                     pct = (processed_count / total) * 100
                     logger.info(
                         'Validation progress: %d/%d (%.1f%%) — %d passed, %d failed, %d skipped',
                         processed_count, total, pct, passed, failed, skipped
                     )
+                    last_progress = now
 
         validated_total = passed + failed
         print('---')
@@ -1039,7 +1088,6 @@ class ValidateCopy(TackleFactory):
 
     def _do_attr_map(self, entries: List[FileEntry]) -> None:
         """Apply timestamps according to ``--attr-map``."""
-        progress_interval = 1000
         success = 0
         skipped = 0
         failed = 0
@@ -1049,17 +1097,10 @@ class ValidateCopy(TackleFactory):
         source_attrs = ['creation', 'access', 'modify']
         
         logger.info('Applying attributes to %d entries...', total)
+        last_progress = time.monotonic()
 
         with StreamingErrorWriter(self.error_csv_path) as error_writer:
             for idx, fe in enumerate(entries, start=1):
-                # Progress logging
-                processed_count = success + skipped + failed
-                if processed_count % progress_interval == 0:
-                    pct = (processed_count / total) * 100
-                    logger.info(
-                        'Apply progress: %d/%d (%.1f%%) — %d success, %d skipped, %d failed',
-                        processed_count, total, pct, success, skipped, failed
-                    )
                 # Validate: path exists and has required source data
                 errors = fe.validate(source_attrs)
                 if errors:
@@ -1068,6 +1109,17 @@ class ValidateCopy(TackleFactory):
                     error_writer.write((fe, error_msg))
                     failed += 1
                     continue
+
+                # Time-based progress logging
+                now = time.monotonic()
+                if now - last_progress >= PROGRESS_INTERVAL:
+                    processed_count = success + skipped + failed
+                    pct = (processed_count / total) * 100
+                    logger.info(
+                        'Apply progress: %d/%d (%.1f%%) — %d success, %d skipped, %d failed',
+                        processed_count, total, pct, success, skipped, failed
+                    )
+                    last_progress = now
 
                 # Type filter (entry_type is normalized during parsing)
                 if fe.entry_type not in self.allowed_types:
@@ -1153,8 +1205,6 @@ class ValidateCopy(TackleFactory):
         Returns:
             0 if all files copied successfully, 1 if any errors occurred.
         """
-        progress_interval = 1000
-        
         # Parse listing
         entries = parse_listing(
             self.listing_path,
@@ -1171,16 +1221,19 @@ class ValidateCopy(TackleFactory):
         
         # Ensure target directory exists
         os.makedirs(self.target_dir, exist_ok=True)
+        last_progress = time.monotonic()
         
         with StreamingErrorWriter(self.error_csv_path) as error_writer:
             for idx, fe in enumerate(entries, start=1):
-                # Progress logging
-                if idx % progress_interval == 0:
+                # Time-based progress logging
+                now = time.monotonic()
+                if now - last_progress >= PROGRESS_INTERVAL:
                     pct = (idx / total) * 100
                     logger.info(
                         'Copy progress: %d/%d (%.1f%%) — %d success, %d failed, %d skipped',
                         idx, total, pct, success, failed, skipped
                     )
+                    last_progress = now
                 
                 # Type filter
                 if fe.entry_type and fe.entry_type not in self.allowed_types:
@@ -1249,8 +1302,6 @@ class ValidateCopy(TackleFactory):
         Returns:
             0 if all files moved successfully, 1 if any errors occurred.
         """
-        progress_interval = 1000
-        
         # Parse listing
         entries = parse_listing(
             self.listing_path,
@@ -1267,16 +1318,19 @@ class ValidateCopy(TackleFactory):
         
         # Ensure target directory exists
         os.makedirs(self.target_dir, exist_ok=True)
+        last_progress = time.monotonic()
         
         with StreamingErrorWriter(self.error_csv_path) as error_writer:
             for idx, fe in enumerate(entries, start=1):
-                # Progress logging
-                if idx % progress_interval == 0:
+                # Time-based progress logging
+                now = time.monotonic()
+                if now - last_progress >= PROGRESS_INTERVAL:
                     pct = (idx / total) * 100
                     logger.info(
                         'Move progress: %d/%d (%.1f%%) — %d success, %d failed, %d skipped',
                         idx, total, pct, success, failed, skipped
                     )
+                    last_progress = now
                 
                 # Type filter
                 if fe.entry_type and fe.entry_type not in self.allowed_types:
@@ -1340,8 +1394,6 @@ class ValidateCopy(TackleFactory):
         Returns:
             0 if all files deleted successfully, 1 if any errors occurred.
         """
-        progress_interval = 1000
-        
         # Parse listing
         entries = parse_listing(
             self.listing_path,
@@ -1355,16 +1407,19 @@ class ValidateCopy(TackleFactory):
         skipped = 0
         
         logger.info('Deleting %d entries...', total)
+        last_progress = time.monotonic()
         
         with StreamingErrorWriter(self.error_csv_path) as error_writer:
             for idx, fe in enumerate(entries, start=1):
-                # Progress logging
-                if idx % progress_interval == 0:
+                # Time-based progress logging
+                now = time.monotonic()
+                if now - last_progress >= PROGRESS_INTERVAL:
                     pct = (idx / total) * 100
                     logger.info(
                         'Delete progress: %d/%d (%.1f%%) — %d success, %d failed, %d skipped',
                         idx, total, pct, success, failed, skipped
                     )
+                    last_progress = now
                 
                 # Type filter
                 if fe.entry_type and fe.entry_type not in self.allowed_types:
