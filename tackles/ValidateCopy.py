@@ -321,6 +321,81 @@ def _create_checksum_progress_callback(
     return callback
 
 
+def _collect_paths_for_walk_level(
+    dirpath: str,
+    dirnames: List[str],
+    filenames: List[str],
+    allowed_types: set,
+    base: str,
+) -> List[str]:
+    """Collect filesystem paths for a single os.walk() level based on allowed types.
+
+    Args:
+        dirpath: Current directory path from os.walk().
+        dirnames: List of subdirectory names from os.walk().
+        filenames: List of filenames from os.walk().
+        allowed_types: Set of allowed type codes ('f', 'd', 'l').
+        base: Base directory path (to detect root level).
+
+    Returns:
+        List of full paths to process.
+    """
+    paths: List[str] = []
+    if 'd' in allowed_types:
+        paths.extend(
+            os.path.join(dirpath, d) for d in dirnames
+        )
+    if 'f' in allowed_types:
+        paths.extend(
+            os.path.join(dirpath, f) for f in filenames
+            if not os.path.islink(os.path.join(dirpath, f))
+        )
+    if 'l' in allowed_types:
+        # Symlinks among files
+        paths.extend(
+            os.path.join(dirpath, f) for f in filenames
+            if os.path.islink(os.path.join(dirpath, f))
+        )
+        # Symlinks among dirs
+        paths.extend(
+            os.path.join(dirpath, d) for d in dirnames
+            if os.path.islink(os.path.join(dirpath, d))
+        )
+
+    # Also include the directory itself if it's the base
+    if dirpath == base and 'd' in allowed_types:
+        paths.insert(0, dirpath)
+
+    return paths
+
+
+def _calculate_entry_checksum(
+    fe: FileEntry,
+    checksum_algorithm: str,
+) -> Optional[str]:
+    """Calculate checksum for a FileEntry if it's a file.
+
+    Args:
+        fe: FileEntry to calculate checksum for.
+        checksum_algorithm: Algorithm name (e.g., 'md5', 'sha256').
+
+    Returns:
+        Error message if checksum calculation failed, None on success.
+    """
+    if fe.entry_type != 'f':
+        return None
+
+    try:
+        progress_cb = _create_checksum_progress_callback(fe.path, fe.size)
+        fe.calculate_checksum(
+            algorithm=checksum_algorithm,
+            progress_callback=progress_cb,
+        )
+        return None
+    except OSError as exc:
+        return f'Cannot calculate checksum: {exc}'
+
+
 def generate_listing(
     base_dir: str,
     output_path: str,
@@ -329,11 +404,11 @@ def generate_listing(
     checksum_algorithm: str = 'md5',
     error_csv_path: Optional[Path] = None,
     progress_interval: float = PROGRESS_INTERVAL,
+    streaming: bool = False,
 ) -> int:
     """Walk *base_dir* and write a canonical 10-column CSV listing to *output_path*.
 
-    Uses :meth:`FileEntry.from_fs_path` to read filesystem attributes and
-    writes entries as they are processed — true streaming output.
+    Uses :meth:`FileEntry.from_fs_path` to read filesystem attributes.
 
     If *calculate_checksum* is True, checksums are computed for files
     (entry_type='f') using the specified *checksum_algorithm*.
@@ -342,6 +417,175 @@ def generate_listing(
     operations are written to the error CSV file.
 
     Progress is logged every *progress_interval* seconds.
+
+    **Two-pass mode** (default, ``streaming=False``):
+        - Pass 1: Walk directory and collect FileEntry objects (stat only, no checksum)
+        - Pass 2: Calculate checksums and write to CSV with accurate percentage progress
+        - Progress shows: "Processing: 1500/10000 (15.0%) - calculating checksums"
+
+    **Streaming mode** (``streaming=True``):
+        - Inline processing: stat + checksum + write immediately for each file
+        - Memory-efficient for extremely large datasets
+        - Progress shows: entries/sec rate
+
+    Returns the number of entries written.
+    """
+    if streaming:
+        return _generate_listing_streaming(
+            base_dir=base_dir,
+            output_path=output_path,
+            allowed_types=allowed_types,
+            calculate_checksum=calculate_checksum,
+            checksum_algorithm=checksum_algorithm,
+            error_csv_path=error_csv_path,
+            progress_interval=progress_interval,
+        )
+    else:
+        return _generate_listing_two_pass(
+            base_dir=base_dir,
+            output_path=output_path,
+            allowed_types=allowed_types,
+            calculate_checksum=calculate_checksum,
+            checksum_algorithm=checksum_algorithm,
+            error_csv_path=error_csv_path,
+            progress_interval=progress_interval,
+        )
+
+
+def _generate_listing_two_pass(
+    base_dir: str,
+    output_path: str,
+    allowed_types: set,
+    calculate_checksum: bool = False,
+    checksum_algorithm: str = 'md5',
+    error_csv_path: Optional[Path] = None,
+    progress_interval: float = PROGRESS_INTERVAL,
+) -> int:
+    """Two-pass listing generation with accurate percentage progress.
+
+    Pass 1: Walk directory and collect FileEntry objects (stat only, no checksum).
+    Pass 2: Calculate checksums and write to CSV.
+
+    Returns the number of entries written.
+    """
+    base = os.path.normpath(base_dir)
+    entries: List[FileEntry] = []
+    stat_errors: List[tuple] = []  # (path, error_msg)
+
+    # Use provided error_csv_path or generate one from output_path
+    if error_csv_path is None:
+        error_csv_path = get_error_filename(output_path)
+
+    start_time = time.monotonic()
+
+    # -------------------------------------------------------------------------
+    # Pass 1: Scan directory structure and collect entries (no checksums)
+    # -------------------------------------------------------------------------
+    logger.info('Pass 1: Scanning directory structure from: %s', base)
+    last_progress = time.monotonic()
+    scanned = 0
+
+    for dirpath, dirnames, filenames in os.walk(base):
+        paths = _collect_paths_for_walk_level(
+            dirpath, dirnames, filenames, allowed_types, base
+        )
+
+        for full_path in paths:
+            # Read filesystem attributes (no checksum yet)
+            try:
+                fe = FileEntry.from_fs_path(full_path)
+                entries.append(fe)
+            except OSError as exc:
+                error_msg = f'Cannot stat: {exc}'
+                logger.error('%s: %s', full_path, error_msg)
+                stat_errors.append((full_path, error_msg))
+
+            scanned += 1
+            now = time.monotonic()
+            if now - last_progress >= progress_interval:
+                logger.info('Pass 1: Scanned %d entries...', scanned)
+                last_progress = now
+
+    total = len(entries)
+    pass1_elapsed = time.monotonic() - start_time
+    logger.info(
+        'Pass 1 complete: Found %d entries in %.1fs (%d stat errors)',
+        total, pass1_elapsed, len(stat_errors),
+    )
+
+    # -------------------------------------------------------------------------
+    # Pass 2: Calculate checksums and write to CSV
+    # -------------------------------------------------------------------------
+    logger.info('Pass 2: Calculating checksums and writing listing...')
+    error_count = len(stat_errors)
+    checksum_count = 0
+    written = 0
+    last_progress = time.monotonic()
+
+    with (
+        StreamingErrorWriter(error_csv_path) as error_writer,
+        StreamingListingWriter(output_path) as writer,
+    ):
+        # Write stat errors from pass 1
+        for path, error_msg in stat_errors:
+            error_fe = FileEntry(path=path)
+            error_writer.write((error_fe, error_msg))
+
+        for i, fe in enumerate(entries, 1):
+            full_path = fe.path
+
+            # Calculate checksum for files (with progress for large files)
+            if calculate_checksum:
+                error_msg = _calculate_entry_checksum(fe, checksum_algorithm)
+                if error_msg:
+                    logger.error('%s: %s', full_path, error_msg)
+                    error_writer.write((fe, error_msg))
+                    error_count += 1
+                    continue
+                if fe.entry_type == 'f':
+                    checksum_count += 1
+
+            # Convert to relative path and write
+            fe.path = os.path.relpath(full_path, base)
+            writer.write(fe)
+            written += 1
+
+            # Time-based progress logging with percentage
+            now = time.monotonic()
+            if now - last_progress >= progress_interval:
+                pct = i / total * 100
+                logger.info(
+                    'Processing: %d/%d (%.1f%%) - calculating checksums',
+                    i, total, pct,
+                )
+                last_progress = now
+
+    # Final summary
+    elapsed = time.monotonic() - start_time
+    logger.info(
+        'Listing complete: %d entries, %d checksums, %d errors (%.1fs)',
+        writer.count, checksum_count, error_count, elapsed,
+    )
+
+    if error_count > 0:
+        logger.info('Errors written to: %s', error_csv_path)
+
+    return writer.count
+
+
+def _generate_listing_streaming(
+    base_dir: str,
+    output_path: str,
+    allowed_types: set,
+    calculate_checksum: bool = False,
+    checksum_algorithm: str = 'md5',
+    error_csv_path: Optional[Path] = None,
+    progress_interval: float = PROGRESS_INTERVAL,
+) -> int:
+    """Streaming listing generation — memory-efficient for very large datasets.
+
+    Processes each file inline: stat + checksum + write immediately.
+    Progress shows entries/sec rate without total count.
 
     Returns the number of entries written.
     """
@@ -358,7 +602,7 @@ def generate_listing(
     last_progress = start_time
     processed = 0
 
-    logger.info('Starting listing generation from: %s', base)
+    logger.info('Starting streaming listing generation from: %s', base)
 
     # Open both writers at the start — true streaming
     with (
@@ -366,32 +610,9 @@ def generate_listing(
         StreamingListingWriter(output_path) as writer,
     ):
         for dirpath, dirnames, filenames in os.walk(base):
-            # Collect all full paths in this directory level
-            paths: List[str] = []
-            if 'd' in allowed_types:
-                paths.extend(
-                    os.path.join(dirpath, d) for d in dirnames
-                )
-            if 'f' in allowed_types:
-                paths.extend(
-                    os.path.join(dirpath, f) for f in filenames
-                    if not os.path.islink(os.path.join(dirpath, f))
-                )
-            if 'l' in allowed_types:
-                # Symlinks among files
-                paths.extend(
-                    os.path.join(dirpath, f) for f in filenames
-                    if os.path.islink(os.path.join(dirpath, f))
-                )
-                # Symlinks among dirs
-                paths.extend(
-                    os.path.join(dirpath, d) for d in dirnames
-                    if os.path.islink(os.path.join(dirpath, d))
-                )
-
-            # Also include the directory itself if it's the base
-            if dirpath == base and 'd' in allowed_types:
-                paths.insert(0, dirpath)
+            paths = _collect_paths_for_walk_level(
+                dirpath, dirnames, filenames, allowed_types, base
+            )
 
             for full_path in paths:
                 # Read filesystem attributes
@@ -407,23 +628,15 @@ def generate_listing(
                     continue
 
                 # Calculate checksum for files (with progress for large files)
-                if calculate_checksum and fe.entry_type == 'f':
-                    try:
-                        # Create progress callback for large files
-                        progress_cb = _create_checksum_progress_callback(
-                            full_path, fe.size
-                        )
-                        fe.calculate_checksum(
-                            algorithm=checksum_algorithm,
-                            progress_callback=progress_cb,
-                        )
-                        checksum_count += 1
-                    except OSError as exc:
-                        error_msg = f'Cannot calculate checksum: {exc}'
+                if calculate_checksum:
+                    error_msg = _calculate_entry_checksum(fe, checksum_algorithm)
+                    if error_msg:
                         logger.error('%s: %s', full_path, error_msg)
                         error_writer.write((fe, error_msg))
                         error_count += 1
                         continue
+                    if fe.entry_type == 'f':
+                        checksum_count += 1
 
                 # Convert to relative path and write immediately
                 fe.path = os.path.relpath(full_path, base)
@@ -589,6 +802,16 @@ class ValidateCopy(TackleFactory):
             default='md5',
             help='Algorithm for checksum calculation (default: md5)',
         )
+        subparser.add_argument(
+            '--streaming',
+            action='store_true',
+            default=False,
+            help=(
+                'Generate mode: Use streaming (memory-efficient) approach instead '
+                'of two-pass. Processes each file inline (stat + checksum + write). '
+                'Recommended for extremely large datasets.'
+            ),
+        )
 
         # Advanced option for apply mode (still useful for selector logic)
         subparser.add_argument(
@@ -697,6 +920,9 @@ class ValidateCopy(TackleFactory):
             # Parse attrs to see if checksum is included
             attrs_list = [a.strip().lower() for a in options.attrs.split(',') if a.strip()]
             self.calculate_checksum = 'checksum' in attrs_list
+
+        # Streaming mode flag (default: two-pass)
+        self.streaming: bool = options.streaming
 
         # Generate error CSV path from output path
         self.error_csv_path: Path = get_error_filename(self.generate_listing_path)
@@ -901,6 +1127,7 @@ class ValidateCopy(TackleFactory):
             logger.info('Error CSV: %s', self.error_csv_path)
 
         if mode_name == 'generate':
+            logger.info('Processing mode: %s', 'streaming' if self.streaming else 'two-pass')
             logger.info('Calculate checksum: %s', 'enabled' if self.calculate_checksum else 'disabled')
             if self.calculate_checksum:
                 logger.info('Checksum algorithm: %s', self.checksum_algorithm)
@@ -932,6 +1159,7 @@ class ValidateCopy(TackleFactory):
                 calculate_checksum=self.calculate_checksum,
                 checksum_algorithm=self.checksum_algorithm,
                 error_csv_path=self.error_csv_path,
+                streaming=self.streaming,
             )
             logger.info(
                 'Generated listing with %d entries: %s',

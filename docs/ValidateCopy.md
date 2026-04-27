@@ -26,13 +26,25 @@ ValidateCopy provides time-based progress updates during all operations:
 - **Default interval:** Progress messages are logged every 10 seconds
 - **Consistent updates:** Progress is reported based on elapsed time, not entry count, ensuring regular feedback regardless of file sizes
 - **Large file progress:** Files ≥100MB show intermediate checksum progress during hashing
-- **Streaming output:** In generate mode, entries are written to the output file as they are processed
+- **Two-pass mode:** In generate mode (default), provides accurate percentage progress by scanning first
+- **Streaming mode:** When using `--streaming`, shows entries/sec rate instead of percentage
 
 ### Progress Message Examples
 
-**Standard progress (all modes):**
+**Two-pass mode (default for generate):**
+```
+2024-01-15 10:30:45 - INFO - Pass 1: Scanning directory...
+2024-01-15 10:30:50 - INFO - Pass 1 complete: 10000 entries found
+2024-01-15 10:31:00 - INFO - Processing: 1500/10000 (15.0%) | 125.3 entries/sec
+```
+
+**Streaming mode (generate with `--streaming`):**
 ```
 2024-01-15 10:30:45 - INFO - Listing progress: 5000 entries written | 3500 checksums calculated | 125.3 entries/sec
+```
+
+**Validation progress:**
+```
 2024-01-15 10:30:55 - INFO - Validation: 1500/3000 (50.0%) | Success: 1498 | Failed: 2 | 45.2 files/sec
 ```
 
@@ -62,7 +74,7 @@ pyTackle ValidateCopy --validate listing.csv --attrs checksum,size /path/to/vali
 
 ### Generate Mode (`--generate <listing>`)
 
-Generates a listing file from the filesystem using true streaming output.
+Generates a listing file from the filesystem with accurate progress reporting.
 
 ```bash
 pyTackle ValidateCopy --generate output.csv --attrs checksum /path/to/scan
@@ -72,11 +84,47 @@ pyTackle ValidateCopy --generate output.csv --attrs checksum /path/to/scan
 - Use `--types fd` to include both files and directories
 - If filesystem errors occur during scanning, failed entries are written to an error CSV file (e.g., `output.csv` → `output_error.csv`)
 
+#### Processing Modes
+
+##### Two-Pass Mode (Default)
+
+The default mode scans the directory twice for accurate progress reporting:
+
+1. **Pass 1:** Quickly collects all file metadata (path, size, type) without calculating checksums
+2. **Pass 2:** Calculates checksums (if requested) and writes entries with percentage progress
+
+```bash
+# Default two-pass mode with percentage progress
+pyTackle ValidateCopy --generate output.csv --attrs checksum /path/to/scan
+```
+
+Progress output: `Processing: 1500/10000 (15.0%)`
+
+**Benefits:**
+- Accurate percentage progress showing completion status
+- Better time estimation for large operations
+- File entries collected in memory during pass 1
+
+##### Streaming Mode (`--streaming`)
+
+For extremely large datasets (millions of files), use `--streaming` to minimize memory usage:
+
+```bash
+pyTackle ValidateCopy --generate output.csv --attrs checksum --streaming /path/to/scan
+```
+
 **Streaming behavior:**
 - Entries are written to the output CSV as they are processed (not buffered in memory)
 - Memory usage remains constant regardless of directory size
 - Partial results are available if the operation is interrupted
-- Progress is logged every 10 seconds showing entries written and processing rate
+- Progress shows entries/sec rate instead of percentage (total count unknown)
+
+Progress output: `Listing progress: 5000 entries written | 3500 checksums calculated | 125.3 entries/sec`
+
+**When to use streaming mode:**
+- Directory contains millions of files where storing metadata would consume excessive memory
+- You prefer immediate output over accurate progress percentage
+- System has limited memory resources
 
 ### Apply Mode (`--apply <listing>`)
 
@@ -266,6 +314,7 @@ The `--attrs` option behaves differently depending on the active mode:
 | Option | Description |
 |--------|-------------|
 | `--checksum-algorithm ALG` | Algorithm for checksum calculation. Default: `md5`. Supports any algorithm from Python's hashlib. |
+| `--streaming` | Use streaming mode instead of two-pass mode. Minimizes memory usage but shows entries/sec instead of percentage progress. |
 
 ### Apply/Path Options
 
@@ -294,7 +343,7 @@ The following options work with `--copy`, `--move`, and `--delete` modes:
 
 ## Typical Workflows with Examples
 
-### Workflow 1: Generate listing from source
+### Workflow 1: Generate listing from source (two-pass mode)
 
 Create a comprehensive listing with checksums for files and directories:
 
@@ -307,6 +356,22 @@ pyTackle ValidateCopy \
 ```
 
 This generates a 10-column CSV with all metadata (timestamps, permissions, ownership, checksums).
+Uses two-pass mode by default for accurate percentage progress.
+
+### Workflow 1b: Generate listing with streaming mode
+
+For extremely large directories (millions of files), use streaming mode to minimize memory:
+
+```bash
+pyTackle ValidateCopy \
+    --generate source_listing.csv \
+    --attrs checksum \
+    --types fd \
+    --streaming \
+    /source/path
+```
+
+Streaming mode processes files immediately without buffering, showing entries/sec rate.
 
 ### Workflow 2: Validate copy against listing
 
