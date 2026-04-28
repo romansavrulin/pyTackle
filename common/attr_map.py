@@ -171,3 +171,107 @@ def parse_attr_map(raw: str, *, allow_empty: bool = False) -> dict[str, str]:
         raise ValueError('--attr-map produced an empty mapping')
 
     return attr_map
+
+
+# ---------------------------------------------------------------------------
+# +/- modifier parsing for --attrs
+# ---------------------------------------------------------------------------
+
+def parse_attrs_with_modifiers(
+    attrs_str: str | None,
+    defaults: set[str],
+) -> set[str]:
+    """Parse an --attrs string with optional +/- modifier notation.
+
+    Supports two modes:
+
+    1. **Explicit mode**: Simple comma-separated list replaces defaults entirely.
+       Example: ``"size,creation,checksum"`` → ``{'size', 'creation', 'checksum'}``
+
+    2. **Modifier mode**: Tokens prefixed with ``+`` or ``-`` modify the default set.
+       Example: ``"+access,-checksum"`` → defaults + access - checksum
+
+    The mode is auto-detected:
+    - If ALL tokens start with ``+`` or ``-``, modifier mode is used
+    - Otherwise, explicit mode is used
+
+    Args:
+        attrs_str: Comma-separated attribute specification string, or None.
+        defaults: Default attribute set to start from (used when attrs_str is None
+            or in modifier mode).
+
+    Returns:
+        Set of attribute names after applying the specification.
+
+    Raises:
+        ValueError: If an attribute name is unknown or if the result is empty.
+
+    Examples::
+
+        >>> defaults = {'size', 'creation', 'checksum'}
+        >>> parse_attrs_with_modifiers(None, defaults)
+        {'size', 'creation', 'checksum'}
+
+        >>> parse_attrs_with_modifiers('path,size', defaults)
+        {'path', 'size'}
+
+        >>> parse_attrs_with_modifiers('+access', defaults)
+        {'size', 'creation', 'checksum', 'access'}
+
+        >>> parse_attrs_with_modifiers('-checksum', defaults)
+        {'size', 'creation'}
+
+        >>> parse_attrs_with_modifiers('+access,-checksum', defaults)
+        {'size', 'creation', 'access'}
+    """
+    # Return defaults if attrs_str is None or empty
+    if attrs_str is None or not attrs_str.strip():
+        result = set(defaults)
+        if not result:
+            raise ValueError('--attrs produced an empty attribute set')
+        return result
+
+    tokens = [t.strip() for t in attrs_str.split(',') if t.strip()]
+
+    if not tokens:
+        return set(defaults)
+
+    # Detect mode: all tokens must have +/- prefix for modifier mode
+    all_have_prefix = all(t.startswith('+') or t.startswith('-') for t in tokens)
+
+    if all_have_prefix:
+        # Modifier mode: start with defaults, apply changes
+        result = set(defaults)
+        for token in tokens:
+            if token.startswith('+'):
+                attr = token[1:]
+                if attr not in VALID_ATTRS:
+                    raise ValueError(
+                        f"Unknown attribute {attr!r} in --attrs; "
+                        f"valid attributes: {', '.join(VALID_ATTRS)}"
+                    )
+                result.add(attr)
+            elif token.startswith('-'):
+                attr = token[1:]
+                if attr not in VALID_ATTRS:
+                    raise ValueError(
+                        f"Unknown attribute {attr!r} in --attrs; "
+                        f"valid attributes: {', '.join(VALID_ATTRS)}"
+                    )
+                result.discard(attr)  # No error if already absent
+    else:
+        # Explicit mode: use tokens as-is
+        result = set()
+        for token in tokens:
+            attr = token.lstrip('+-')  # Strip any accidental prefix
+            if attr not in VALID_ATTRS:
+                raise ValueError(
+                    f"Unknown attribute {attr!r} in --attrs; "
+                    f"valid attributes: {', '.join(VALID_ATTRS)}"
+                )
+            result.add(attr)
+
+    if not result:
+        raise ValueError('--attrs produced an empty attribute set')
+
+    return result

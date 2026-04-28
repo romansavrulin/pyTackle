@@ -365,8 +365,11 @@ class FileEntry:
                 return errors
 
             for attr in attrs:
+                # Skip size validation for directories - directory sizes vary by filesystem
+                if attr == 'size' and self.entry_type == 'd':
+                    continue
+
                 my_val = getattr(self, attr, None)
-                
 
                 # Skip empty/unset attributes - nothing to validate against filesystem
                 # This handles cases like listings without checksums

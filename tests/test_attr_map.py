@@ -13,6 +13,7 @@ from common.attr_map import (
     get_canonical_all_map,
     get_canonical_timestamp_map,
     parse_attr_map,
+    parse_attrs_with_modifiers,
 )
 
 
@@ -191,3 +192,136 @@ class TestGetCanonicalAllMap:
         result = get_canonical_all_map()
         assert result == CANONICAL_MAP
         assert result is not CANONICAL_MAP
+
+
+# ------------------------------------------------------------------
+# parse_attrs_with_modifiers — +/- notation for --attrs
+# ------------------------------------------------------------------
+
+class TestParseAttrsWithModifiersNoneInput:
+    """Tests for None/empty input returning defaults."""
+
+    def test_none_returns_defaults(self):
+        defaults = {'size', 'creation', 'checksum'}
+        result = parse_attrs_with_modifiers(None, defaults)
+        assert result == defaults
+
+    def test_empty_string_returns_defaults(self):
+        defaults = {'size', 'creation', 'checksum'}
+        result = parse_attrs_with_modifiers('', defaults)
+        assert result == defaults
+
+    def test_whitespace_only_returns_defaults(self):
+        defaults = {'size', 'creation', 'checksum'}
+        result = parse_attrs_with_modifiers('   ', defaults)
+        assert result == defaults
+
+
+class TestParseAttrsWithModifiersExplicitMode:
+    """Tests for explicit mode (no +/- prefixes)."""
+
+    def test_explicit_list_replaces_defaults(self):
+        defaults = {'size', 'creation', 'checksum'}
+        result = parse_attrs_with_modifiers('path,size', defaults)
+        assert result == {'path', 'size'}
+
+    def test_explicit_list_with_whitespace(self):
+        defaults = {'size', 'creation', 'checksum'}
+        result = parse_attrs_with_modifiers('  path , size  ', defaults)
+        assert result == {'path', 'size'}
+
+    def test_explicit_list_deduplicates(self):
+        defaults = {'size', 'creation', 'checksum'}
+        result = parse_attrs_with_modifiers('size,size,path', defaults)
+        assert result == {'path', 'size'}
+
+    def test_explicit_with_all_attrs(self):
+        defaults = {'size'}
+        result = parse_attrs_with_modifiers(
+            'path,size,creation,access,modify,permissions,uid,gid,checksum,entry_type',
+            defaults
+        )
+        assert len(result) == 10
+
+
+class TestParseAttrsWithModifiersAddOnly:
+    """Tests for add-only mode (+attr)."""
+
+    def test_add_single_attr(self):
+        defaults = {'size', 'creation'}
+        result = parse_attrs_with_modifiers('+access', defaults)
+        assert result == {'size', 'creation', 'access'}
+
+    def test_add_multiple_attrs(self):
+        defaults = {'size', 'creation'}
+        result = parse_attrs_with_modifiers('+access,+modify', defaults)
+        assert result == {'size', 'creation', 'access', 'modify'}
+
+    def test_add_already_present_is_idempotent(self):
+        defaults = {'size', 'creation'}
+        result = parse_attrs_with_modifiers('+size', defaults)
+        assert result == {'size', 'creation'}
+
+
+class TestParseAttrsWithModifiersRemoveOnly:
+    """Tests for remove-only mode (-attr)."""
+
+    def test_remove_single_attr(self):
+        defaults = {'size', 'creation', 'checksum'}
+        result = parse_attrs_with_modifiers('-checksum', defaults)
+        assert result == {'size', 'creation'}
+
+    def test_remove_multiple_attrs(self):
+        defaults = {'size', 'creation', 'checksum', 'path'}
+        result = parse_attrs_with_modifiers('-checksum,-path', defaults)
+        assert result == {'size', 'creation'}
+
+    def test_remove_absent_is_no_op(self):
+        """Removing an attr that isn't in defaults should not error."""
+        defaults = {'size', 'creation'}
+        result = parse_attrs_with_modifiers('-access', defaults)
+        assert result == {'size', 'creation'}
+
+
+class TestParseAttrsWithModifiersMixedMode:
+    """Tests for mixed mode (+attr,-attr)."""
+
+    def test_add_and_remove(self):
+        defaults = {'size', 'creation', 'checksum'}
+        result = parse_attrs_with_modifiers('+access,-checksum', defaults)
+        assert result == {'size', 'creation', 'access'}
+
+    def test_add_and_remove_multiple(self):
+        defaults = {'size', 'creation', 'checksum', 'path'}
+        result = parse_attrs_with_modifiers('+access,+modify,-checksum,-path', defaults)
+        assert result == {'size', 'creation', 'access', 'modify'}
+
+
+class TestParseAttrsWithModifiersErrors:
+    """Error handling tests for parse_attrs_with_modifiers."""
+
+    def test_unknown_attr_in_explicit_mode(self):
+        defaults = {'size'}
+        with pytest.raises(ValueError, match="Unknown attribute"):
+            parse_attrs_with_modifiers('invalid_attr', defaults)
+
+    def test_unknown_attr_in_add_mode(self):
+        defaults = {'size'}
+        with pytest.raises(ValueError, match="Unknown attribute"):
+            parse_attrs_with_modifiers('+invalid_attr', defaults)
+
+    def test_unknown_attr_in_remove_mode(self):
+        defaults = {'size'}
+        with pytest.raises(ValueError, match="Unknown attribute"):
+            parse_attrs_with_modifiers('-invalid_attr', defaults)
+
+    def test_empty_result_from_removal(self):
+        """Removing all attrs should raise ValueError."""
+        defaults = {'size'}
+        with pytest.raises(ValueError, match="empty attribute set"):
+            parse_attrs_with_modifiers('-size', defaults)
+
+    def test_empty_defaults_with_none_input(self):
+        """Empty defaults with None input raises ValueError."""
+        with pytest.raises(ValueError, match="empty attribute set"):
+            parse_attrs_with_modifiers(None, set())

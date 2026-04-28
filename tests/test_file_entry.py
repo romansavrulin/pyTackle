@@ -753,3 +753,44 @@ class TestValidate:
         # check_fs=False mode checks that attrs are SET, so None is an error
         assert len(errors) == 1
         assert "not set in entry" in errors[0]
+
+    def test_validate_skips_size_for_directories(self, tmp_path):
+        """validate(check_fs=True) skips size validation for directories.
+        
+        Directory sizes vary across filesystems and can change when files
+        are added/removed, so size validation should be skipped for entry_type='d'.
+        """
+        # Create a directory entry with a size that differs from filesystem
+        entry = FileEntry(
+            path=str(tmp_path),
+            entry_type='d',
+            size=999999,  # Intentionally wrong size
+        )
+        # Should pass — size validation is skipped for directories
+        errors = entry.validate(['size', 'entry_type'], check_fs=True)
+        assert errors == [], f"Expected no errors for directory size validation, got: {errors}"
+
+    def test_validate_does_not_skip_size_for_files(self, tmp_file):
+        """validate(check_fs=True) still checks size for regular files."""
+        # Create a file entry with a size that differs from filesystem
+        fs_entry = FileEntry.from_fs_path(tmp_file)
+        entry = FileEntry(
+            path=tmp_file,
+            entry_type='f',
+            size=fs_entry.size + 1000,  # Intentionally wrong size
+        )
+        # Should fail — size validation is NOT skipped for files
+        errors = entry.validate(['size'], check_fs=True)
+        assert len(errors) == 1
+        assert "size mismatch" in errors[0]
+
+    def test_validate_size_passes_for_matching_file(self, tmp_file):
+        """validate(check_fs=True) passes when file size matches."""
+        fs_entry = FileEntry.from_fs_path(tmp_file)
+        entry = FileEntry(
+            path=tmp_file,
+            entry_type='f',
+            size=fs_entry.size,  # Correct size
+        )
+        errors = entry.validate(['size'], check_fs=True)
+        assert errors == []

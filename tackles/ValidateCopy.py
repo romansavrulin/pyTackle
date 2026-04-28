@@ -33,6 +33,7 @@ from common.attr_map import (
     VALID_ATTRS,
     get_canonical_timestamp_map,
     parse_attr_map,
+    parse_attrs_with_modifiers,
 )  # noqa: F401 — re-exported
 from common.FileEntry import FileEntry
 from common.fs_attrs import (
@@ -943,25 +944,17 @@ class ValidateCopy(TackleFactory):
         self.error_csv_path: Path = get_error_filename(self.listing_path)
 
         # Handle --attrs for validate mode
-        # Default: all available attributes
-        default_validate_attrs = 'size,creation,permissions,uid,gid,checksum,entry_type,path'
+        # Default: all available attributes except access/modify (which can differ legitimately)
+        DEFAULT_VALIDATE_ATTRS: set[str] = {
+            'size', 'creation', 'permissions', 'uid', 'gid', 'checksum', 'entry_type', 'path'
+        }
 
-        if options.attrs is not None:
-            attrs_raw = options.attrs
-        else:
-            attrs_raw = default_validate_attrs
-
-        self.validate_attrs = [
-            a.strip() for a in attrs_raw.split(',') if a.strip()
-        ]
-        invalid_attrs = [a for a in self.validate_attrs if a not in VALID_ATTRS]
-        if invalid_attrs:
-            logger.error(
-                'Invalid attribute(s) in --attrs: %s. '
-                'Valid attributes: %s',
-                ', '.join(invalid_attrs),
-                ', '.join(VALID_ATTRS),
+        try:
+            self.validate_attrs = list(
+                parse_attrs_with_modifiers(options.attrs, DEFAULT_VALIDATE_ATTRS)
             )
+        except ValueError as exc:
+            logger.error('Invalid --attrs: %s', exc)
             sys.exit(1)
 
         self.attr_map: Dict[str, str] = {}

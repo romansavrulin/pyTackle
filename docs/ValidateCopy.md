@@ -303,6 +303,50 @@ The `--attrs` option behaves differently depending on the active mode:
 | **Generate** | Include checksum in listing (use `--attrs checksum` to enable) | (no checksum) |
 | **Apply** | Attributes to set on filesystem | `creation,access,modify` |
 
+#### Modifier Notation for --attrs (Validate Mode)
+
+In validate mode, `--attrs` supports two ways to specify attributes:
+
+**Explicit mode** — Replace defaults entirely:
+```bash
+--attrs="size,mtime"           # Only validate size and mtime
+--attrs="checksum"             # Only validate checksum
+```
+
+**Modifier mode** — Add or remove from defaults using `+` and `-` prefixes:
+```bash
+--attrs="+access"              # Add "access" to default set
+--attrs="-checksum"            # Remove "checksum" from default set
+--attrs="+access,-checksum"    # Combine: add access, remove checksum
+--attrs="-size,-checksum"      # Remove both size and checksum from defaults
+```
+
+**Rules for modifier mode:**
+- All tokens must be **either ALL prefixed** (`+`/`-`) **or NONE prefixed** — mixing is not allowed
+- `+attr` adds the attribute to the default set
+- `-attr` removes the attribute from the default set
+- Unknown attributes are ignored with a warning
+
+**Examples:**
+
+```bash
+# Default validation (all attributes)
+pyTackle ValidateCopy --validate listing.csv /path
+
+# Skip checksum validation (faster, metadata-only check)
+pyTackle ValidateCopy --validate listing.csv --attrs="-checksum" /path
+
+# Add access time validation to defaults
+pyTackle ValidateCopy --validate listing.csv --attrs="+access" /path
+
+# Only validate checksum and size (explicit mode)
+pyTackle ValidateCopy --validate listing.csv --attrs="checksum,size" /path
+```
+
+#### Directory Size Validation
+
+**Note:** Size validation is automatically skipped for directories, even when `size` is included in `--attrs`. This is because directory sizes vary by filesystem implementation and are unreliable for validation purposes. Directory entries will show `(size skipped for directory)` in verbose output when size would otherwise be validated.
+
 ### Validation Options
 
 | Option | Description |
